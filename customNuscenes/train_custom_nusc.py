@@ -6,7 +6,7 @@ warnings.simplefilter('ignore', category=NumbaDeprecationWarning)
 warnings.simplefilter('ignore', category=NumbaWarning)
 import sys
 
-sys.path.append('/kaggle/code/lyft-tho')
+sys.path.append('/kaggle/code/MMS-PP-conedetection')
 
 from CustomNuscDataset import *  # to register dataset
 from models import *  # to register model
@@ -205,16 +205,56 @@ def run_train(config_path,
                 labels = example_torch['labels']
                 cared = ret_dict['cared']
 
-                net_metric = net.update_metrics(cls_loss_reduced,
-                                                loc_loss_reduced, cls_preds,
-                                                labels, cared)
+                net_metrics = net.update_metrics(cls_loss_reduced,
+                                                 loc_loss_reduced, cls_preds,
+                                                 labels, cared)
                 step_times = (time.time() - t)
                 step_times.append(step_times)
                 t = time.time()
                 metrics = {}
                 global_step = net.get_global_step()
 
+                if global_step % display_step == 0:
+                    eta = time.time() - start_tic
+                    if measure_time:
+                        for name, val in net.net_avg_time_dict().items():
+                            print(f"avg {name} time = {val * 1000:.3f} ms")
+                    metrics['steps'] = global_step
+                    metrics['epoch'] = global_step / len(dataloader)
+                    metrics['steptime'] = np.mean(step_times)
+                    metrics['valid'] = ave_valid_loss
+                    step_times = []
 
+                    metrics['loss'] = net_metrics['loss']['cls_loss'] + net_metrics['loss']['loc_loss']
+                    metrics['cls_loss'] = net_metrics['loss']['cls_loss']
+                    metrics['loc_loss'] = net_metrics['loss']['loc_loss']
+
+                    if model_cfg.use_direction_classifier:
+                        dir_loss_reduced = ret_dict['dir_loss_reduced'].mean()
+                        metrics['dir_rt'] = float(
+                            dir_loss_reduced.detach().cpu().numpy())
+                    metrics['lr'] = float(amp_optimizer.lr)
+                    metrics['eta'] = time_to_str(eta)
+                    model_logging.log_metrics(metrics, global_step)
+
+                    net.clear_metrics()
+                if global_step % steps_per_eval == 0:
+                    torchplus.train.save_models(model_dir, [net, amp_optimizer],
+                                                net.get_global_step())
+                step += 1
+                if step >= total_step:
+                    break
+            if step >= total_step:
+                break
+    except Exception as e:
+        example['metadata'] = 'None'
+        model_logging.log_text(str(e), step)
+        model_logging.log_text(json.dump(example['metadata'], indent=2), step)
+        torchplus.train.save_models(model_dir, [net, amp_optimizer], step)
+        raise e
+    finally:
+        model_logging.close()
+    torchplus.train.save_models(model_dir, [net, amp_optimizer], net.get_global_step())
 
     ########### to be continued
 
@@ -351,3 +391,21 @@ def example_convert_to_torch(example, dtype=torch.float32,
         else:
             example_torch[k] = v
     return example_torch
+
+
+def time_to_str(t, mode='min'):
+    if mode == 'min':
+        t = int(t) / 60
+        hr = t // 60
+        min = t % 60
+        return '%2d hr %02d m' % (hr, min)
+
+    elif mode == 'sec':
+        t = int(t)
+        min = t // 60
+        sec = t % 60
+        return '%2d min %02d sec' % (min, sec)
+
+
+    else:
+        raise NotImplementedError

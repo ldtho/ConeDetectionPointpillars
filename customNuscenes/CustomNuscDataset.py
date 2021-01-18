@@ -3,7 +3,7 @@ import os
 from tqdm import tqdm, tqdm_notebook
 import numpy as np
 import pandas as pandas
-sys.path.append('/kaggle/code/lyft-tho')
+sys.path.append('/kaggle/code/MMS-PP-conedetection')
 import fire
 import pickle
 from lyft_dataset_sdk.utils.geometry_utils import view_points, transform_matrix, quaternion_yaw
