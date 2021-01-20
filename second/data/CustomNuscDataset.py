@@ -14,53 +14,61 @@ from nuscenes.utils.geometry_utils import *
 
 VERSION = 'trainval'
 NUSC_DATASET_ROOT = f'/media/starlet/LdTho/data/sets/nuscenes/v1.0-{VERSION}'
-OBJECT_CLASSES = ['animal',
-                  'human.pedestrian.adult',
-                  'human.pedestrian.child',
-                  'human.pedestrian.construction_worker',
-                  'human.pedestrian.personal_mobility',
-                  'human.pedestrian.police_officer',
-                  'human.pedestrian.stroller',
-                  'human.pedestrian.wheelchair',
-                  'movable_object.barrier',
-                  'movable_object.debris',
-                  'movable_object.pushable_pullable',
-                  'movable_object.trafficcone',
-                  'static_object.bicycle_rack',
-                  'vehicle.bicycle',
-                  'vehicle.bus.bendy',
-                  'vehicle.bus.rigid',
-                  'vehicle.car',
-                  'vehicle.construction',
-                  'vehicle.emergency.ambulance',
-                  'vehicle.emergency.police',
-                  'vehicle.motorcycle',
-                  'vehicle.trailer',
-                  'vehicle.truck']
+
 
 @register_dataset
 class CustomNuscDataset(Dataset):
     NumPointFeatures = 5
+    NameMapping = {
+        'movable_object.barrier': 'barrier',
+        'vehicle.bicycle': 'bicycle',
+        'vehicle.bus.bendy': 'bus',
+        'vehicle.bus.rigid': 'bus',
+        'vehicle.car': 'car',
+        'vehicle.construction': 'construction_vehicle',
+        'vehicle.motorcycle': 'motorcycle',
+        'human.pedestrian.adult': 'pedestrian',
+        'human.pedestrian.child': 'pedestrian',
+        'human.pedestrian.construction_worker': 'pedestrian',
+        'human.pedestrian.police_officer': 'pedestrian',
+        'movable_object.trafficcone': 'traffic_cone',
+        'vehicle.trailer': 'trailer',
+        'vehicle.truck': 'truck',
+        'movable_object.pushable_pullable': 'DontCare',
+        'movable_object.debris': 'DontCare'
+    }
+    DefaultAttribute = {
+        "car": "vehicle.parked",
+        "pedestrian": "pedestrian.moving",
+        "trailer": "vehicle.parked",
+        "truck": "vehicle.parked",
+        "bus": "vehicle.parked",
+        "motorcycle": "cycle.without_rider",
+        "construction_vehicle": "vehicle.parked",
+        "bicycle": "cycle.without_rider",
+        "barrier": "",
+        "traffic_cone": "",
+    }
 
     def __init__(self, root_path=NUSC_DATASET_ROOT, info_path=None,
-                 class_names=["movable_object.trafficcone"], prep_func=None,
+                 class_names=["traffic_cone"], prep_func=None,
                  num_point_features=None):
-
+        self.NumPointFeatures = 5
         data_dir = root_path
-        json_dir = os.path.join(root_path, f'v1.0-{VERSION}')
-        print(json_dir)
         self.class_names = class_names
         self.nusc = NuScenes(dataroot=data_dir,version=f'v1.0-{VERSION}')
         self._prep_func = prep_func
-        self.box_classes = set()
+        # self.box_classes = set()
         self.filtered_sample_tokens = []
         for sample in self.nusc.sample:
             sample_token = sample['token']
             sample_lidar_token = sample['data']['LIDAR_TOP']
             boxes = self.nusc.get_boxes(sample_lidar_token)
             for box in boxes:
-                self.box_classes.add(box.name)
-                if box.name in self.class_names:
+                # self.box_classes.add(box.name
+                if box.name not in self.NameMapping.keys():
+                    continue
+                if self.NameMapping[box.name] in self.class_names:
                     self.filtered_sample_tokens.append(sample_token)
                     break
 
@@ -71,11 +79,12 @@ class CustomNuscDataset(Dataset):
 
     def __getitem__(self, index):
         input_dict = self.get_sensor_data(index)
-        try:
-            example = self._prep_func(input_dict=input_dict)
-            return example
-        except:
-            return input_dict
+        example = self._prep_func(input_dict=input_dict)
+        example["metadata"] = input_dict["metadata"]
+        if "anchors_mask" in example:
+            example["anchors_mask"] = example["anchors_mask"].astype(np.uint8)
+        return example
+
     def __name__(self):
         return "CustomNuscDataset"
     def get_sensor_data(self, query):
@@ -102,10 +111,10 @@ class CustomNuscDataset(Dataset):
             theta = quaternion_yaw(box.orientation)
             gt_boxes.append([xyz[0], xyz[1], xyz[2], wlh[0], wlh[1], wlh[2], -theta - np.pi / 2])
             gt_names.append(box.name)
-            print(box.name)
-
+        gt_boxes = np.concatenate(gt_boxes).reshape(-1,7)
+        gt_names = np.array(gt_names)
         res['lidar']['annotations'] = {
-            'boxes': np.asarray(gt_boxes,dtype=np.float32),
+            'boxes': gt_boxes,
             'names': gt_names,
         }
         return res
@@ -150,11 +159,15 @@ class CustomNuscDataset(Dataset):
 
         keep_box_idx = []
         for i, box in enumerate(boxes_dict):
-            if box.name in self.class_names:
+            if box.name not in self.NameMapping.keys():
+                continue
+            if self.NameMapping[box.name] in self.class_names:
+                box.name = self.NameMapping[box.name]
                 keep_box_idx.append(i)
 
         boxes_dict = [box for i, box in enumerate(boxes_dict) if i in keep_box_idx]
-
+        self.move_boxes_to_car_space(boxes_dict, ego_pose)
+        # print(boxes_dict)
         return boxes_dict
 
     def move_boxes_to_car_space(self,boxes, ego_pose):
@@ -176,4 +189,3 @@ if __name__ == '__main__':
     fire.Fire()
     # train_data = CustomNuscDataset()
 #     print(train_data[1])
-

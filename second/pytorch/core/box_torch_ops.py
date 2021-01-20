@@ -4,14 +4,69 @@ from functools import reduce
 import numpy as np
 import torch
 from torch import stack as tstack
-
+# added
+from spconv.utils import rbbox_iou, rbbox_intersection
 import torchplus
 from torchplus.tools import torch_to_np_dtype
-from second.core.non_max_suppression.nms_gpu import (nms_gpu_cc, rotate_iou_gpu,
-                                                       rotate_nms_gpu)
-from second.core.non_max_suppression.nms_cpu import rotate_nms_cc
+# from second.core.non_max_suppression.nms_gpu import (nms_gpu_cc,
+#                                                      rotate_iou_gpu,
+#                                                        rotate_nms_gpu)
+from second.core.non_max_suppression.nms_cpu import rotate_nms_cc, nms_cc
 import spconv
+def iou_jit(boxes, query_boxes, eps=1.0):
+    """calculate box iou. note that jit version runs 2x faster than cython in
+    my machine!
+    Parameters
+    ----------
+    boxes: (N, 4) ndarray of float
+    query_boxes: (K, 4) ndarray of float
+    Returns
+    -------
+    overlaps: (N, K) ndarray of overlap between boxes and query_boxes
+    """
+    N = boxes.shape[0]
+    K = query_boxes.shape[0]
+    overlaps = np.zeros((N, K), dtype=boxes.dtype)
+    for k in range(K):
+        box_area = ((query_boxes[k, 2] - query_boxes[k, 0] + eps) *
+                    (query_boxes[k, 3] - query_boxes[k, 1] + eps))
+        for n in range(N):
+            iw = (min(boxes[n, 2], query_boxes[k, 2]) - max(
+                boxes[n, 0], query_boxes[k, 0]) + eps)
+            if iw > 0:
+                ih = (min(boxes[n, 3], query_boxes[k, 3]) - max(
+                    boxes[n, 1], query_boxes[k, 1]) + eps)
+                if ih > 0:
+                    ua = (
+                        (boxes[n, 2] - boxes[n, 0] + eps) *
+                        (boxes[n, 3] - boxes[n, 1] + eps) + box_area - iw * ih)
+                    overlaps[n, k] = iw * ih / ua
+    return overlaps
+def riou_cc(rbboxes, qrbboxes, standup_thresh=0.0):
+    # less than 50ms when used in second one thread. 10x slower than gpu
+    boxes_corners = center_to_corner_box2d(rbboxes[:, :2], rbboxes[:, 2:4],
+                                           rbboxes[:, 4])
+    boxes_standup = corner_to_standup_nd(boxes_corners)
+    qboxes_corners = center_to_corner_box2d(qrbboxes[:, :2], qrbboxes[:, 2:4],
+                                            qrbboxes[:, 4])
+    qboxes_standup = corner_to_standup_nd(qboxes_corners)
+    # if standup box not overlapped, rbbox not overlapped too.
+    standup_iou = iou_jit(boxes_standup, qboxes_standup, eps=0.0)
+    return rbbox_iou(boxes_corners, qboxes_corners, standup_iou,
+                     standup_thresh)
 
+def rinter_cc(rbboxes, qrbboxes, standup_thresh=0.0):
+    # less than 50ms when used in second one thread. 10x slower than gpu
+    boxes_corners = center_to_corner_box2d(rbboxes[:, :2], rbboxes[:, 2:4],
+                                           rbboxes[:, 4])
+    boxes_standup = corner_to_standup_nd(boxes_corners)
+    qboxes_corners = center_to_corner_box2d(qrbboxes[:, :2], qrbboxes[:, 2:4],
+                                            qrbboxes[:, 4])
+    qboxes_standup = corner_to_standup_nd(qboxes_corners)
+    # if standup box not overlapped, rbbox not overlapped too.
+    standup_iou = iou_jit(boxes_standup, qboxes_standup, eps=0.0)
+    return rbbox_intersection(boxes_corners, qboxes_corners, standup_iou,
+                     standup_thresh)
 def second_box_encode(boxes, anchors, encode_angle_to_vector=False, smooth_dim=False):
     """box encode for VoxelNet
     Args:
@@ -466,7 +521,8 @@ def nms(bboxes,
     if len(dets_np) == 0:
         keep = np.array([], dtype=np.int64)
     else:
-        ret = np.array(nms_gpu_cc(dets_np, iou_threshold), dtype=np.int64)
+        # ret = np.array(nms_gpu_cc(dets_np, iou_threshold), dtype=np.int64)
+        ret = np.array(nms_cc(dets_np, iou_threshold), dtype=np.int64)
         keep = ret[:post_max_size]
     if keep.shape[0] == 0:
         return torch.zeros([0]).long().to(bboxes.device)

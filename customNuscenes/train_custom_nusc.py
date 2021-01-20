@@ -5,10 +5,11 @@ import warnings
 warnings.simplefilter('ignore', category=NumbaDeprecationWarning)
 warnings.simplefilter('ignore', category=NumbaWarning)
 import sys
+from os import path
 
-sys.path.append('/kaggle/code/MMS-PP-conedetection')
+sys.path.append('/kaggle/code/ConeDetectionPointpillars')
 
-from CustomNuscDataset import *  # to register dataset
+from second.data.CustomNuscDataset import *  # to register dataset
 from models import *  # to register model
 import torch
 from second.utils.log_tool import SimpleModelLog
@@ -32,7 +33,7 @@ from lyft_dataset_sdk.lyftdataset import Quaternion
 # from lyft_dataset_sdk.utils.data_classes import Box
 from nuscenes.utils.geometry_utils import *
 from nuscenes.utils.data_classes import Box
-
+import tqdm
 
 def run_train(config_path,
               model_dir,
@@ -106,16 +107,17 @@ def run_train(config_path,
         optimizer_cfg,
         net,
         mixed=False,
-        loss_scale=loss_scale
-    )
+        loss_scale=loss_scale)
     if loss_scale < 0:
         loss_scale = "dynamic"
     if train_cfg.enable_mixed_precision:
         max_num_voxels = input_cfg.preprocess.max_number_of_voxels * input_cfg.batch_size
         print("max_num_voxels: %d" % (max_num_voxels))
         from apex import amp
-        net, amp_optimizer = amp.initialize(net, fastai_optimizer, opt_level="01",
-                                            keep_batchnorm_fp32=None, loss_scale=loss_scale)
+        net, amp_optimizer = amp.initialize(net, fastai_optimizer,
+                                            opt_level="01",
+                                            keep_batchnorm_fp32=None,
+                                            loss_scale=loss_scale)
         net.metrics_to_float()
     else:
         amp_optimizer = fastai_optimizer
@@ -179,15 +181,16 @@ def run_train(config_path,
         while True:
             if clear_metrics_every_epoch:
                 net.clear_metrics()
-            for example in tqdm.tqdm(dataloader):
+            for example in tqdm_notebook(dataloader):
+                #             print(example)
                 lr_scheduler.step(net.get_global_step())
                 example.pop("metrics")
                 example_torch = example_convert_to_torch(example, float_dtype)
 
                 ret_dict = net_parallel(example_torch)
-                loss = ret_dict['loss'].mean()
-                cls_loss_reduced = ret_dict['cls_loss_reduced'].mean()
-                loc_loss_reduced = ret_dict['loc_loss_reduced'].mean()
+                loss = ret_dict["loss"].mean()
+                cls_loss_reduced = ret_dict["cls_loss_reduced"].mean()
+                loc_loss_reduced = ret_dict["loc_loss_reduced"].mean()
 
                 if train_cfg.enable_mixed_precision:
                     if net.get_global_step() < 100:
@@ -201,15 +204,15 @@ def run_train(config_path,
                 amp_optimizer.zero_grad()
                 net.update_global_step()
 
-                cls_preds = ret_dict['cls_preds']
-                labels = example_torch['labels']
-                cared = ret_dict['cared']
+                cls_preds = ret_dict["cls_preds"]
+                labels = example_torch["labels"]
+                cared = ret_dict["cared"]
 
                 net_metrics = net.update_metrics(cls_loss_reduced,
                                                  loc_loss_reduced, cls_preds,
                                                  labels, cared)
-                step_times = (time.time() - t)
-                step_times.append(step_times)
+                step_time = (time.time() - t)
+                step_times.append(step_time)
                 t = time.time()
                 metrics = {}
                 global_step = net.get_global_step()
@@ -217,22 +220,25 @@ def run_train(config_path,
                 if global_step % display_step == 0:
                     eta = time.time() - start_tic
                     if measure_time:
-                        for name, val in net.net_avg_time_dict().items():
+                        for name, val in net.get_avg_time_dict().items():
                             print(f"avg {name} time = {val * 1000:.3f} ms")
-                    metrics['steps'] = global_step
+
+                    metrics["step"] = global_step
                     metrics['epoch'] = global_step / len(dataloader)
                     metrics['steptime'] = np.mean(step_times)
+                    # metrics["runtime"].update(time_metrics[0])
                     metrics['valid'] = ave_valid_loss
                     step_times = []
 
-                    metrics['loss'] = net_metrics['loss']['cls_loss'] + net_metrics['loss']['loc_loss']
-                    metrics['cls_loss'] = net_metrics['loss']['cls_loss']
-                    metrics['loc_loss'] = net_metrics['loss']['loc_loss']
+                    metrics["loss"] = net_metrics['loss']['cls_loss'] + net_metrics['loss']['loc_loss']
+                    metrics["cls_loss"] = net_metrics['loss']['cls_loss']
+                    metrics["loc_loss"] = net_metrics['loss']['loc_loss']
 
                     if model_cfg.use_direction_classifier:
-                        dir_loss_reduced = ret_dict['dir_loss_reduced'].mean()
-                        metrics['dir_rt'] = float(
+                        dir_loss_reduced = ret_dict["dir_loss_reduced"].mean()
+                        metrics["dir_rt"] = float(
                             dir_loss_reduced.detach().cpu().numpy())
+
                     metrics['lr'] = float(amp_optimizer.lr)
                     metrics['eta'] = time_to_str(eta)
                     model_logging.log_metrics(metrics, global_step)
@@ -247,9 +253,8 @@ def run_train(config_path,
             if step >= total_step:
                 break
     except Exception as e:
-        example['metadata'] = 'None'
         model_logging.log_text(str(e), step)
-        model_logging.log_text(json.dump(example['metadata'], indent=2), step)
+        model_logging.log_text(json.dumps(example['metadata'], indent=2), step)
         torchplus.train.save_models(model_dir, [net, amp_optimizer], step)
         raise e
     finally:

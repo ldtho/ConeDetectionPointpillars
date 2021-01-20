@@ -35,7 +35,7 @@ class AkLyftDataset(Dataset):
                  class_names=None,
                  prep_func=None,
                  num_point_features=None):
-
+        self.NumPointFeatures = 5
         data_dir = os.path.join(LYFT_DATASET_ROOT,"train")
         json_dir = os.path.join(data_dir, "train" + "_data")
         self.lyft = LyftDataset(data_path=data_dir, json_path=json_dir)

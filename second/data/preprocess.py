@@ -156,6 +156,8 @@ def prep_pointcloud(input_dict,
             group_ids = anno_dict["group_ids"]
             gt_dict["group_ids"] = group_ids
     calib = None
+    # print(gt_dict)
+    # print("+++++++++++++++1111111+++++++++++++++")
     if "calib" in input_dict:
         calib = input_dict["calib"]
 
@@ -188,8 +190,14 @@ def prep_pointcloud(input_dict,
         bev_map = simplevis.nuscene_vis(points, boxes_lidar)
         cv2.imshow('pre-noise', bev_map)
         """
+        # print(gt_dict)
+        # print("_______________before_________________")
         selected = kitti.drop_arrays_by_name(gt_dict["gt_names"], ["DontCare"])
         _dict_select(gt_dict, selected)
+        # print(selected)
+        # print('>>>>>>>>>>>>>>selected<<<<<<<<<<<<<<')
+        # print(gt_dict)
+        # print("_______________after drop name__________________")
         if remove_unknown:
             remove_mask = gt_dict["difficulty"] == -1
             """
@@ -199,14 +207,22 @@ def prep_pointcloud(input_dict,
             """
             keep_mask = np.logical_not(remove_mask)
             _dict_select(gt_dict, keep_mask)
+        # print(gt_dict)
+        # print("_______________after remove unknown__________________")
         gt_dict.pop("difficulty")
         if min_points_in_gt > 0:
             # points_count_rbbox takes 10ms with 10 sweeps nuscenes data
             point_counts = box_np_ops.points_count_rbbox(points, gt_dict["gt_boxes"])
             mask = point_counts >= min_points_in_gt
             _dict_select(gt_dict, mask)
+        # print(gt_dict)
+        # print("_______________after remove min points__________________")
+        # print(db_sampler)
         gt_boxes_mask = np.array(
             [n in class_names for n in gt_dict["gt_names"]], dtype=np.bool_)
+        # print(class_names)
+        # print('******************compare**************')
+        # print(gt_dict['gt_names'])
         if db_sampler is not None:
             group_ids = None
             if "group_ids" in gt_dict:
@@ -251,7 +267,8 @@ def prep_pointcloud(input_dict,
         group_ids = None
         if "group_ids" in gt_dict:
             group_ids = gt_dict["group_ids"]
-
+        # print(gt_dict)
+        # print('+++++++++++++++1.7 middle+++++++++++++++++++++++')
         prep.noise_per_object_v3_(
             gt_dict["gt_boxes"],
             points,
@@ -265,10 +282,21 @@ def prep_pointcloud(input_dict,
         # should remove unrelated objects after noise per object
         # for k, v in gt_dict.items():
         #     print(k, v.shape)
+        # print(gt_dict)
+        # print(class_names)
+        # print('******************compare**************')
+        # print(gt_dict['gt_names'])
+        # print('+++++++++++++++1.75 before gt_boxes_mask+++++++++++++++++++++++')
         _dict_select(gt_dict, gt_boxes_mask)
+        # print(gt_dict)
+        # print(gt_boxes_mask)
+        # print('>>>>>>>>>>>>>>>>>>>maskkk<<<<<<<<<<<<<<<<<<<<<<<<<<<<<')
+        # print('+++++++++++++++1.76 after gt_boxes_mask+++++++++++++++++++++++')
         gt_classes = np.array(
             [class_names.index(n) + 1 for n in gt_dict["gt_names"]],
             dtype=np.int32)
+        # print(gt_dict)
+        # print('+++++++++++++++1.888 before process+++++++++++++++++++++++')
         gt_dict["gt_classes"] = gt_classes
         gt_dict["gt_boxes"], points = prep.random_flip(gt_dict["gt_boxes"],
                                                        points, 0.5, random_flip_x, random_flip_y)
@@ -276,10 +304,16 @@ def prep_pointcloud(input_dict,
             gt_dict["gt_boxes"], points, *global_rotation_noise)
         gt_dict["gt_boxes"], points = prep.global_scaling_v2(
             gt_dict["gt_boxes"], points, *global_scaling_noise)
+        # print(gt_dict)
+        # print('+++++++++++++++2222222222+++++++++++++++++++++++')
         prep.global_translate_(gt_dict["gt_boxes"], points, global_translate_noise_std)
         bv_range = voxel_generator.point_cloud_range[[0, 1, 3, 4]]
         mask = prep.filter_gt_box_outside_range_by_center(gt_dict["gt_boxes"], bv_range)
+        # print(mask)
+        # print("__________________mask___________________")
         _dict_select(gt_dict, mask)
+        # print(gt_dict)
+        # print("+++++++++++++++33333333333+++++++++++++++")
 
         # limit rad to [-pi, pi]
         gt_dict["gt_boxes"][:, 6] = box_np_ops.limit_period(
@@ -362,6 +396,7 @@ def prep_pointcloud(input_dict,
     example["gt_names"] = gt_dict["gt_names"]
     # voxel_labels = box_np_ops.assign_label_to_voxel(gt_boxes, coordinates,
     #                                                 voxel_size, coors_range)
+    # print(gt_dict)
     if create_targets:
         t1 = time.time()
         targets_dict = target_assigner.assign(
