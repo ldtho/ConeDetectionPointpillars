@@ -4,7 +4,7 @@ import pickle
 
 import fire
 import sys
-sys.path.insert(1,'/kaggle/code/lyft-tho')
+sys.path.insert(1,'/kaggle/code/ConeDetectionPointpillars')
 import second.data.kitti_dataset as kitti_ds
 import second.data.nuscenes_dataset as nu_ds
 from second.data.all_dataset import create_groundtruth_database
@@ -19,7 +19,6 @@ def nuscenes_data_prep(root_path, version, dataset_name, max_sweeps=10):
     name = "infos_train.pkl"
     if version == "v1.0-test":
         name = "infos_test.pkl"
-    print(name)
     create_groundtruth_database(dataset_name, root_path, Path(root_path) / name)
 
 if __name__ == '__main__':
