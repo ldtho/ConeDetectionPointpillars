@@ -18,6 +18,8 @@ from second.protos import pipeline_pb2
 from second.pytorch.builder import (box_coder_builder, input_reader_builder,
                                     lr_scheduler_builder, optimizer_builder,
                                     second_builder)
+from second.utils.progress_bar import ProgressBar
+
 from second.pytorch.core import box_torch_ops
 import torchplus
 import re
@@ -35,8 +37,10 @@ from nuscenes.utils.geometry_utils import *
 from nuscenes.utils.data_classes import Box
 import tqdm
 
+
 def run_train(config_path,
               model_dir,
+              result_path=None,
               create_folder=False,
               display_step=50,
               pretrained_path=None,
@@ -54,6 +58,8 @@ def run_train(config_path,
         raise ValueError("model dir exists and you don't specify resume")
 
     model_dir.mkdir(parents=True, exist_ok=True)
+    if result_path is None:
+        result_path = model_dir / 'results'
     config_file_bkp = "pipeline.config"
 
     if isinstance(config_path, str):
@@ -147,6 +153,12 @@ def run_train(config_path,
         target_assigner=target_assigner,
         multi_gpu=multi_gpu
     )
+    eval_dataset = input_reader_builder.build(
+        eval_input_cfg,
+        model_cfg,
+        training=False,
+        voxel_generator=voxel_generator,
+        target_assigner=target_assigner)
     dataloader = torch.utils.data.DataLoader(
         dataset,
         batch_size=input_cfg.batch_size * num_gpu,
@@ -157,6 +169,14 @@ def run_train(config_path,
         worker_init_fn=_worker_init_fn,
         drop_last=not multi_gpu
     )
+    eval_dataloader = torch.utils.data.DataLoader(
+        eval_dataset,
+        batch_size=input_cfg.batch_size,
+        shuffle=False,
+        num_workers=eval_input_cfg.preprocess.num_workers,
+        pin_memory=False,
+        collate_fn=merge_second_batch)
+
     ######################
     # TRAINING
     ######################
@@ -181,8 +201,7 @@ def run_train(config_path,
         while True:
             if clear_metrics_every_epoch:
                 net.clear_metrics()
-            for example in tqdm_notebook(dataloader):
-                #             print(example)
+            for example in tqdm.tqdm(dataloader):
                 lr_scheduler.step(net.get_global_step())
                 example.pop("metrics")
                 example_torch = example_convert_to_torch(example, float_dtype)
@@ -247,6 +266,37 @@ def run_train(config_path,
                 if global_step % steps_per_eval == 0:
                     torchplus.train.save_models(model_dir, [net, amp_optimizer],
                                                 net.get_global_step())
+                    net.eval()
+                    result_path_step = result_path / f"step_{net.get_global_step()}"
+                    result_path_step.mkdir(parents=True, exist_ok=True)
+                    model_logging.log_text("########################", global_step)
+                    model_logging.log_text(" EVALUATE")
+                    model_logging.log_text("########################", global_step)
+                    model_logging.log_text("Generating output labels...", global_step)
+                    t = time.time()
+                    detections = []
+                    prog_bar = ProgressBar()
+                    net.clear_timer()
+                    prog_bar.start((len(eval_dataset) + eval_input_cfg.batch_size - 1) // eval_input_cfg.batch_size)
+                    for example in iter(eval_dataloader):
+                        example = example_convert_to_torch(example, float_dtype)
+                        detections += net(example)
+                        prog_bar.print_bar()
+
+                    sec_per_ex = len(eval_dataset) / (time.time() - t)
+                    model_logging.log_text(
+                        f'generate label finished({sec_per_ex:.2f}/s). start eval:',
+                        global_step)
+                    result_dict = eval_dataset.dataset.evaluation(
+                        detections, str(result_path_step)
+                    )
+                    for k, v in result_dict['results'].items():
+                        model_logging.log_text(f"Evaluation {k}, {global_step}")
+                        model_logging.log_text(v, global_step)
+                    model_logging.log_metrics(result_dict['detail'], global_step)
+                    with open(result_path_step / "result.pkl", 'wb') as f:
+                        pickle.dump(detections, f)
+                    net.train()
                 step += 1
                 if step >= total_step:
                     break

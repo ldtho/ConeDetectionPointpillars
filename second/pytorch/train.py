@@ -5,7 +5,7 @@ from pathlib import Path
 import pickle
 import shutil
 import time
-import re 
+import re
 import fire
 import numpy as np
 import torch
@@ -23,6 +23,7 @@ from second.pytorch.builder import (box_coder_builder, input_reader_builder,
 from second.utils.log_tool import SimpleModelLog
 from second.utils.progress_bar import ProgressBar
 import psutil
+
 
 def example_convert_to_torch(example, dtype=torch.float32,
                              device=None) -> dict:
@@ -67,12 +68,14 @@ def build_network(model_cfg, measure_time=False):
         model_cfg, voxel_generator, target_assigner, measure_time=measure_time)
     return net
 
+
 def _worker_init_fn(worker_id):
     time_seed = np.array(time.time(), dtype=np.int32)
     np.random.seed(time_seed + worker_id)
     print(f"WORKER {worker_id} seed:", np.random.get_state()[1][0])
 
-def freeze_params(params: dict, include: str=None, exclude: str=None):
+
+def freeze_params(params: dict, include: str = None, exclude: str = None):
     assert isinstance(params, dict)
     include_re = None
     if include is not None:
@@ -84,14 +87,15 @@ def freeze_params(params: dict, include: str=None, exclude: str=None):
     for k, p in params.items():
         if include_re is not None:
             if include_re.match(k) is not None:
-                continue 
+                continue
         if exclude_re is not None:
             if exclude_re.match(k) is None:
-                continue 
+                continue
         remain_params.append(p)
     return remain_params
 
-def freeze_params_v2(params: dict, include: str=None, exclude: str=None):
+
+def freeze_params_v2(params: dict, include: str = None, exclude: str = None):
     assert isinstance(params, dict)
     include_re = None
     if include is not None:
@@ -107,7 +111,8 @@ def freeze_params_v2(params: dict, include: str=None, exclude: str=None):
             if exclude_re.match(k) is None:
                 p.requires_grad = False
 
-def filter_param_dict(state_dict: dict, include: str=None, exclude: str=None):
+
+def filter_param_dict(state_dict: dict, include: str = None, exclude: str = None):
     assert isinstance(state_dict, dict)
     include_re = None
     if include is not None:
@@ -122,7 +127,7 @@ def filter_param_dict(state_dict: dict, include: str=None, exclude: str=None):
                 continue
         if exclude_re is not None:
             if exclude_re.match(k) is not None:
-                continue 
+                continue
         res_dict[k] = p
     return res_dict
 
@@ -144,7 +149,7 @@ def train(config_path,
     """train a VoxelNet model specified by a config file.
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
+
     model_dir = str(Path(model_dir).resolve())
     if create_folder:
         if Path(model_dir).exists():
@@ -191,11 +196,11 @@ def train(config_path,
         new_pretrained_dict = {}
         for k, v in pretrained_dict.items():
             if k in model_dict and v.shape == model_dict[k].shape:
-                new_pretrained_dict[k] = v        
+                new_pretrained_dict[k] = v
         print("Load pretrained parameters:")
         for k, v in new_pretrained_dict.items():
             print(k, v.shape)
-        model_dict.update(new_pretrained_dict) 
+        model_dict.update(new_pretrained_dict)
         net.load_state_dict(model_dict)
         freeze_params_v2(dict(net.named_parameters()), freeze_include, freeze_exclude)
         net.clear_global_step()
@@ -218,10 +223,10 @@ def train(config_path,
         assert max_num_voxels < 65535, "spconv fp16 training only support this"
         from apex import amp
         net, amp_optimizer = amp.initialize(net, fastai_optimizer,
-                                        opt_level="O2",
-                                        keep_batchnorm_fp32=True,
-                                        loss_scale=loss_scale
-                                        )
+                                            opt_level="O2",
+                                            keep_batchnorm_fp32=True,
+                                            loss_scale=loss_scale
+                                            )
         net.metrics_to_float()
     else:
         amp_optimizer = fastai_optimizer
@@ -270,7 +275,7 @@ def train(config_path,
         drop_last=not multi_gpu)
     eval_dataloader = torch.utils.data.DataLoader(
         eval_dataset,
-        batch_size=eval_input_cfg.batch_size, # only support multi-gpu train
+        batch_size=eval_input_cfg.batch_size,  # only support multi-gpu train
         shuffle=False,
         num_workers=eval_input_cfg.preprocess.num_workers,
         pin_memory=False,
@@ -312,7 +317,7 @@ def train(config_path,
                 cls_neg_loss = ret_dict["cls_neg_loss"].mean()
                 loc_loss = ret_dict["loc_loss"]
                 cls_loss = ret_dict["cls_loss"]
-                
+
                 cared = ret_dict["cared"]
                 labels = example_torch["labels"]
                 if train_cfg.enable_mixed_precision:
@@ -383,17 +388,17 @@ def train(config_path,
                     result_path_step = result_path / f"step_{net.get_global_step()}"
                     result_path_step.mkdir(parents=True, exist_ok=True)
                     model_logging.log_text("#################################",
-                                        global_step)
+                                           global_step)
                     model_logging.log_text("# EVAL", global_step)
                     model_logging.log_text("#################################",
-                                        global_step)
+                                           global_step)
                     model_logging.log_text("Generate output labels...", global_step)
                     t = time.time()
                     detections = []
                     prog_bar = ProgressBar()
                     net.clear_timer()
                     prog_bar.start((len(eval_dataset) + eval_input_cfg.batch_size - 1)
-                                // eval_input_cfg.batch_size)
+                                   // eval_input_cfg.batch_size)
                     for example in iter(eval_dataloader):
                         example = example_convert_to_torch(example, float_dtype)
                         detections += net(example)
@@ -544,9 +549,10 @@ def evaluate(config_path,
             print("Evaluation {}".format(k))
             print(v)
 
+
 def helper_tune_target_assigner(config_path, target_rate=None, update_freq=200, update_delta=0.01, num_tune_epoch=5):
     """get information of target assign to tune thresholds in anchor generator.
-    """    
+    """
     if isinstance(config_path, str):
         # directly provide a config object. this usually used
         # when you want to train with several different parameters in
@@ -588,7 +594,7 @@ def helper_tune_target_assigner(config_path, target_rate=None, update_freq=200, 
         collate_fn=merge_second_batch,
         worker_init_fn=_worker_init_fn,
         drop_last=False)
-    
+
     class_count = {}
     anchor_count = {}
     class_count_tune = {}
@@ -599,7 +605,6 @@ def helper_tune_target_assigner(config_path, target_rate=None, update_freq=200, 
         class_count_tune[c] = 0
         anchor_count_tune[c] = 0
 
-
     step = 0
     classes = target_assigner.classes
     if target_rate is None:
@@ -609,7 +614,7 @@ def helper_tune_target_assigner(config_path, target_rate=None, update_freq=200, 
             gt_names = example["gt_names"]
             for name in gt_names:
                 class_count_tune[name] += 1
-            
+
             labels = example['labels']
             for i in range(1, len(classes) + 1):
                 anchor_count_tune[classes[i - 1]] += int(np.sum(labels == i))
@@ -640,7 +645,7 @@ def helper_tune_target_assigner(config_path, target_rate=None, update_freq=200, 
 
         for name in gt_names:
             class_count[name] += 1
-        
+
         labels = example['labels']
         for i in range(1, len(classes) + 1):
             anchor_count[classes[i - 1]] += int(np.sum(labels == i))
@@ -653,9 +658,10 @@ def helper_tune_target_assigner(config_path, target_rate=None, update_freq=200, 
             if ag.class_name in target_rate:
                 print(ag.class_name, ag.match_threshold, ag.unmatch_threshold)
 
+
 def mcnms_parameters_search(config_path,
-          model_dir,
-          preds_path):
+                            model_dir,
+                            preds_path):
     pass
 
 
