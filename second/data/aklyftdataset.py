@@ -6,7 +6,8 @@ from second.core import box_np_ops
 from second.data.dataset import Dataset, register_dataset
 from lyft_dataset_sdk.lyftdataset import LyftDatasetExplorer, LyftDataset,LidarPointCloud,Quaternion
 from lyft_dataset_sdk.utils.geometry_utils import *
-
+import sys
+sys.path.append('/kaggle/code/ConeDetectionPointpillars')
 
 LYFT_DATASET_ROOT = "/kaggle/input/3d-object-detection-for-autonomous-vehicles/"
 
@@ -118,23 +119,25 @@ class AkLyftDataset(Dataset):
                                                                            "LIDAR_TOP",
                                                                            num_sweeps=10)
             lidar_pointcloud.transform(car_from_sensor)
+            points = lidar_pointcloud.points  # .transpose()  # .reshape(-1, 5)
+
+            # points = points[:3, :]
+            # points[:3, :] = points
+            points[3, :] /= 255
+            points[3, :] -= 0.5
+
+            points_cat = np.concatenate([points, times], axis=0).transpose()
+
+            points_cat = points_cat[~np.isnan(points_cat).any(axis=1)]
+            return points_cat
         except Exception as e:
-            print("Failed to load Lidar Pointcloud for {}: {}:".format(sample_rec, e))
+            # print("Failed to load Lidar Pointcloud for {}: {}:".format(sample_rec, e))
+            return self.getPoints(index+1)
 
 
 
-        points = lidar_pointcloud.points  # .transpose()  # .reshape(-1, 5)
 
-        # points = points[:3, :]
-        # points[:3, :] = points
-        points[3, :] /= 255
-        points[3, :] -= 0.5
 
-        points_cat = np.concatenate([points, times], axis=0).transpose()
-
-        points_cat = points_cat[~np.isnan(points_cat).any(axis=1)]
-
-        return points_cat
 
     def getBoxes(self,index):
         #index = self.split[index]

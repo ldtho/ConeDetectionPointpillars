@@ -178,6 +178,7 @@ def prep_pointcloud(input_dict,
         points = box_np_ops.remove_outside_points(
             points, calib["rect"], calib["Trv2c"], calib["P2"], image_shape)
     if remove_environment is True and training:
+        gt_names = anno_dict["names"]
         selected = kitti.keep_arrays_by_name(gt_names, target_assigner.classes)
         _dict_select(gt_dict, selected)
         masks = box_np_ops.points_in_rbbox(points, gt_dict["gt_boxes"])
@@ -221,8 +222,9 @@ def prep_pointcloud(input_dict,
         gt_boxes_mask = np.array(
             [n in class_names for n in gt_dict["gt_names"]], dtype=np.bool_)
         # print(class_names)
-        # print('******************compare**************')
+        # print('******************db_sampler**************')
         # print(gt_dict['gt_names'])
+        # print(db_sampler)
         if db_sampler is not None:
             group_ids = None
             if "group_ids" in gt_dict:
@@ -287,14 +289,20 @@ def prep_pointcloud(input_dict,
         # print('******************compare**************')
         # print(gt_dict['gt_names'])
         # print('+++++++++++++++1.75 before gt_boxes_mask+++++++++++++++++++++++')
+        # print('******************gt_dict**************')
+        # print(gt_dict)
+        # print('******************gt_boxes_mask**************')
+        # print(gt_boxes_mask)
         _dict_select(gt_dict, gt_boxes_mask)
         # print(gt_dict)
         # print(gt_boxes_mask)
-        # print('>>>>>>>>>>>>>>>>>>>maskkk<<<<<<<<<<<<<<<<<<<<<<<<<<<<<')
         # print('+++++++++++++++1.76 after gt_boxes_mask+++++++++++++++++++++++')
         gt_classes = np.array(
             [class_names.index(n) + 1 for n in gt_dict["gt_names"]],
             dtype=np.int32)
+        # print('>>>>>>>>>>>>>>>>>>>name maping<<<<<<<<<<<<<<<<<<<')
+        # print(gt_dict['gt_names'])
+        # print(gt_classes)
         # print(gt_dict)
         # print('+++++++++++++++1.888 before process+++++++++++++++++++++++')
         gt_dict["gt_classes"] = gt_classes

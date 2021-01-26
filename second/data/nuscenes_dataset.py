@@ -304,7 +304,7 @@ class NuScenesDataset(Dataset):
             },
         }
 
-    def evaluation_nusc(self, detections, output_dir):
+    def asassevaluation_nusc(self, detections, output_dir):
         version = self.version
         eval_set_map = {
             "v1.0-mini": "mini_train",

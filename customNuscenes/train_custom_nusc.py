@@ -35,7 +35,7 @@ from lyft_dataset_sdk.lyftdataset import Quaternion
 # from lyft_dataset_sdk.utils.data_classes import Box
 from nuscenes.utils.geometry_utils import *
 from nuscenes.utils.data_classes import Box
-import tqdm
+from tqdm import tqdm, tqdm_notebook
 
 
 def run_train(config_path,
@@ -121,7 +121,7 @@ def run_train(config_path,
         print("max_num_voxels: %d" % (max_num_voxels))
         from apex import amp
         net, amp_optimizer = amp.initialize(net, fastai_optimizer,
-                                            opt_level="01",
+                                            opt_level="O1",
                                             keep_batchnorm_fp32=None,
                                             loss_scale=loss_scale)
         net.metrics_to_float()
@@ -195,18 +195,35 @@ def run_train(config_path,
 
     ave_valid_loss = 0.0
 
+    from tqdm import tqdm, tqdm_notebook
+    model_logging = SimpleModelLog(model_dir)
+    model_logging.open()
+    model_logging.log_text(proto_str + "\n", 0, tag="config")
+
+    start_step = net.get_global_step()
+    total_step = train_cfg.steps
+    t = time.time()
+    steps_per_eval = train_cfg.steps_per_eval
+    clear_metrics_every_epoch = train_cfg.clear_metrics_every_epoch
+
+    amp_optimizer.zero_grad()
+    step_times = []
+    step = start_step
+    run = True
+    ave_valid_loss = 0.0
     try:
         start_tic = time.time()
         print("num samples: %d" % (len(dataset)))
-        while True:
+        while run == True:
             if clear_metrics_every_epoch:
                 net.clear_metrics()
-            for example in tqdm.tqdm(dataloader):
+            for example in tqdm_notebook(dataloader):
                 lr_scheduler.step(net.get_global_step())
                 example.pop("metrics")
                 example_torch = example_convert_to_torch(example, float_dtype)
 
                 ret_dict = net_parallel(example_torch)
+                #             print(ret_dict)
                 loss = ret_dict["loss"].mean()
                 cls_loss_reduced = ret_dict["cls_loss_reduced"].mean()
                 loc_loss_reduced = ret_dict["loc_loss_reduced"].mean()
@@ -245,7 +262,6 @@ def run_train(config_path,
                     metrics["step"] = global_step
                     metrics['epoch'] = global_step / len(dataloader)
                     metrics['steptime'] = np.mean(step_times)
-                    # metrics["runtime"].update(time_metrics[0])
                     metrics['valid'] = ave_valid_loss
                     step_times = []
 
@@ -264,39 +280,58 @@ def run_train(config_path,
 
                     net.clear_metrics()
                 if global_step % steps_per_eval == 0:
+                    #                 net.eval()
+                    #                 det = net(example_torch)
+                    #                 if 1 in det[0]['label_preds']:
+                    #                     print(det)
+                    #                 else:
+                    #                     print('#', end='')
+                    #                 net.train()
                     torchplus.train.save_models(model_dir, [net, amp_optimizer],
                                                 net.get_global_step())
-                    net.eval()
-                    result_path_step = result_path / f"step_{net.get_global_step()}"
-                    result_path_step.mkdir(parents=True, exist_ok=True)
-                    model_logging.log_text("########################", global_step)
-                    model_logging.log_text(" EVALUATE")
-                    model_logging.log_text("########################", global_step)
-                    model_logging.log_text("Generating output labels...", global_step)
-                    t = time.time()
-                    detections = []
-                    prog_bar = ProgressBar()
-                    net.clear_timer()
-                    prog_bar.start((len(eval_dataset) + eval_input_cfg.batch_size - 1) // eval_input_cfg.batch_size)
-                    for example in iter(eval_dataloader):
-                        example = example_convert_to_torch(example, float_dtype)
-                        detections += net(example)
-                        prog_bar.print_bar()
+                    if debug:
+                        index = torch.randint(0, len(eval_dataset),(1,))[0]
+                        # det_boxes, labels and score here
+                        example = eval_dataset.dataset.get_sensor_data(index)
+                        points = example['lidar']['points']
+                        p = points[points[:,-1] < 0.01
 
-                    sec_per_ex = len(eval_dataset) / (time.time() - t)
-                    model_logging.log_text(
-                        f'generate label finished({sec_per_ex:.2f}/s). start eval:',
-                        global_step)
-                    result_dict = eval_dataset.dataset.evaluation(
-                        detections, str(result_path_step)
-                    )
-                    for k, v in result_dict['results'].items():
-                        model_logging.log_text(f"Evaluation {k}, {global_step}")
-                        model_logging.log_text(v, global_step)
-                    model_logging.log_metrics(result_dict['detail'], global_step)
-                    with open(result_path_step / "result.pkl", 'wb') as f:
-                        pickle.dump(detections, f)
-                    net.train()
+
+
+                    net.eval()
+                    # result_path_step = result_path / f"step_{net.get_global_step()}"
+                    # result_path_step.mkdir(parents=True, exist_ok=True)
+                    # model_logging.log_text("########################", global_step)
+                    # model_logging.log_text(" EVALUATE",global_step)
+                    # model_logging.log_text("########################", global_step)
+                    # model_logging.log_text("Generating output labels...", global_step)
+                    # t = time.time()
+                    # detections = []
+                    # prog_bar = ProgressBar()
+                    # net.clear_timer()
+                    # prog_bar.start((len(eval_dataset) + eval_input_cfg.batch_size - 1) // eval_input_cfg.batch_size)
+                    # for example in iter(eval_dataloader):
+                    #     example = example_convert_to_torch(example, float_dtype)
+                    #     det = net(example)
+                    #     if len(det['label_preds']) > 0:
+                    #         print(det)
+                    #     detections += det
+                    #     prog_bar.print_bar()
+                    #
+                    # sec_per_ex = len(eval_dataset) / (time.time() - t)
+                    # model_logging.log_text(
+                    #     f'generate label finished({sec_per_ex:.2f}/s). start eval:',
+                    #     global_step)
+                    # result_dict = eval_dataset.dataset.evaluation(
+                    #     detections, str(result_path_step)
+                    # )
+                    # for k, v in result_dict['results'].items():
+                    #     model_logging.log_text(f"Evaluation {k}", global_step)
+                    #     model_logging.log_text(v, global_step)
+                    # model_logging.log_metrics(result_dict['detail'], global_step)
+                    # with open(result_path_step / "result.pkl", 'wb') as f:
+                    #     pickle.dump(detections, f)
+                    # net.train()
                 step += 1
                 if step >= total_step:
                     break
@@ -312,6 +347,16 @@ def run_train(config_path,
     torchplus.train.save_models(model_dir, [net, amp_optimizer], net.get_global_step())
 
     ########### to be continued
+
+
+def evaluate(config_path,
+             model_dir=None,
+             result_path=None,
+             ckpt_path=None,
+             measure_time=False,
+             batch_size=None,
+             **kwargs):
+    pass
 
 
 def build_network(model_cfg, measure_time=False):

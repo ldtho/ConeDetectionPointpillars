@@ -87,7 +87,6 @@ class DataBaseSamplerV2:
             if np.abs(global_rot_range[0] - global_rot_range[1]) >= 1e-3:
                 self._enable_global_rot = True
         self._global_rot_range = global_rot_range
-
     @property
     def use_group_sampling(self):
         return self._use_group_sampling
@@ -100,6 +99,7 @@ class DataBaseSamplerV2:
                    random_crop=False,
                    gt_group_ids=None,
                    calib=None):
+
         sampled_num_dict = {}
         sample_num_per_class = []
         for class_name, max_sample_num in zip(self._sample_classes,
@@ -109,7 +109,6 @@ class DataBaseSamplerV2:
             sampled_num = np.round(self._rate * sampled_num).astype(np.int64)
             sampled_num_dict[class_name] = sampled_num
             sample_num_per_class.append(sampled_num)
-
         sampled_groups = self._sample_classes
         if self._use_group_sampling:
             assert gt_group_ids is not None
@@ -157,22 +156,34 @@ class DataBaseSamplerV2:
                                 [s["group_id"] for s in sampled_cls], axis=0)
                         total_group_ids = np.concatenate(
                             [total_group_ids, sampled_group_ids], axis=0)
-
+        # print("*********sampled******************")
+        # print(sampled)
         if len(sampled) > 0:
             sampled_gt_boxes = np.concatenate(sampled_gt_boxes, axis=0)
-            num_sampled = len(sampled)
+            num_sampled = []
             s_points_list = []
             for info in sampled:
                 s_points = np.fromfile(
                     str(pathlib.Path(root_path) / info["path"]),
                     dtype=np.float32)
                 s_points = s_points.reshape([-1, num_point_features])
+                # print("*********s_points******************")
+                # print(np.sum(s_points))
+                # print(s_points)
+                points_sum = np.sum(s_points)
+                if np.isnan(points_sum) or np.isinf(np.abs(points_sum)):
+                    num_sampled.append(False)
+                else:
+                    num_sampled.append(True)
+
                 # if not add_rgb_to_points:
                 #     s_points = s_points[:, :4]
                 if "rot_transform" in info:
                     rot = info["rot_transform"]
                     s_points[:, :3] = box_np_ops.rotation_points_single_angle(
                         s_points[:, :3], rot, axis=2)
+                # print("**************path******************")
+                # print(info["path"])
                 s_points[:, :3] += info["box3d_lidar"][:3]
                 s_points_list.append(s_points)
                 # print(pathlib.Path(info["path"]).stem)
@@ -204,7 +215,7 @@ class DataBaseSamplerV2:
                 "difficulty": np.array([s["difficulty"] for s in sampled]),
                 "gt_boxes": sampled_gt_boxes,
                 "points": np.concatenate(s_points_list, axis=0),
-                "gt_masks": np.ones((num_sampled, ), dtype=np.bool_)
+                "gt_masks": num_sampled
             }
             if self._use_group_sampling:
                 ret["group_ids"] = np.array([s["group_id"] for s in sampled])
