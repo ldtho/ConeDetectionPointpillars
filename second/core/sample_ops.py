@@ -167,9 +167,9 @@ class DataBaseSamplerV2:
                     str(pathlib.Path(root_path) / info["path"]),
                     dtype=np.float32)
                 s_points = s_points.reshape([-1, num_point_features])
-                # print("*********s_points******************")
-                # print(np.sum(s_points))
-                # print(s_points)
+                print("*********s_points******************")
+                print(np.sum(s_points))
+                print(s_points)
                 points_sum = np.sum(s_points)
                 if np.isnan(points_sum) or np.isinf(np.abs(points_sum)):
                     num_sampled.append(False)

@@ -796,7 +796,7 @@ def run_evaluate_TTA(
         if debug:
             index = batch_size * num_processed - 1
             det_boxes = detections[-1]['box3d_lidar'].cpu().detach().numpy()
-            det_label = detections[-1]['label_preds'].cpu().detach().numpy()
+            det_label = detections[-1]['l5.abel_preds'].cpu().detach().numpy()
             det_scores = detections[-1]['scores'].cpu().detach().numpy()
             example = eval_dataset.dataset.get_sensor_data(index)
 

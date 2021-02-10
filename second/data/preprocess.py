@@ -301,7 +301,7 @@ def prep_pointcloud(input_dict,
             [class_names.index(n) + 1 for n in gt_dict["gt_names"]],
             dtype=np.int32)
         # print('>>>>>>>>>>>>>>>>>>>name maping<<<<<<<<<<<<<<<<<<<')
-        # print(gt_dict['gt_names'])
+        # print([{n:class_names.index(n) + 1} for n in gt_dict["gt_names"]])
         # print(gt_classes)
         # print(gt_dict)
         # print('+++++++++++++++1.888 before process+++++++++++++++++++++++')

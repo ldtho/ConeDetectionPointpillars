@@ -57,7 +57,6 @@ class NuScenesDataset(Dataset):
                  class_names=None,
                  prep_func=None,
                  num_point_features=None):
-        self._root_path = Path(root_path)
         with open(info_path, 'rb') as f:
             data = pickle.load(f)
         self._nusc_infos = data["infos"]
@@ -83,8 +82,11 @@ class NuScenesDataset(Dataset):
         if "gt_boxes" not in self._nusc_infos[0]:
             return None
         from nuscenes.eval.detection.config import eval_detection_configs
+        from nuscenes.eval.detection.config import DetectionConfig
         cls_range_map = eval_detection_configs[self.
                                                eval_version]["class_range"]
+        # cfg = DetectionCzonfig(self.eval_version)
+        # cls_range_map = cfg.class_range
         gt_annos = []
         for info in self._nusc_infos:
             gt_names = info["gt_names"]
@@ -304,7 +306,7 @@ class NuScenesDataset(Dataset):
             },
         }
 
-    def asassevaluation_nusc(self, detections, output_dir):
+    def evaluation_nusc(self, detections, output_dir):
         version = self.version
         eval_set_map = {
             "v1.0-mini": "mini_train",

@@ -46,7 +46,9 @@ def run_train(config_path,
               pretrained_path=None,
               multi_gpu=False,
               measure_time=False,
-              resume=False):
+              resume=False,
+              debug = False
+              ):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model_dir = str(Path(model_dir).resolve())
     if create_folder:
@@ -211,6 +213,11 @@ def run_train(config_path,
     step = start_step
     run = True
     ave_valid_loss = 0.0
+    if resume:
+        cur_time = time.localtime(time.time())
+        cur_time = f'{cur_time.tm_mday}-{cur_time.tm_mon}-{cur_time.tm_year}_{cur_time.tm_hour}:{cur_time.tm_min}'
+        model_dir = model_dir / cur_time
+        model_dir.mkdir(parents=True, exist_ok=True)
     try:
         start_tic = time.time()
         print("num samples: %d" % (len(dataset)))
@@ -223,7 +230,6 @@ def run_train(config_path,
                 example_torch = example_convert_to_torch(example, float_dtype)
 
                 ret_dict = net_parallel(example_torch)
-                #             print(ret_dict)
                 loss = ret_dict["loss"].mean()
                 cls_loss_reduced = ret_dict["cls_loss_reduced"].mean()
                 loc_loss_reduced = ret_dict["loc_loss_reduced"].mean()
@@ -254,6 +260,11 @@ def run_train(config_path,
                 global_step = net.get_global_step()
 
                 if global_step % display_step == 0:
+                    net.eval()
+                    det = net(example_torch)
+                    print(det[0]['label_preds'])
+                    print(det[0]['scores'])
+                    net.train()
                     eta = time.time() - start_tic
                     if measure_time:
                         for name, val in net.get_avg_time_dict().items():
@@ -280,58 +291,39 @@ def run_train(config_path,
 
                     net.clear_metrics()
                 if global_step % steps_per_eval == 0:
-                    #                 net.eval()
-                    #                 det = net(example_torch)
-                    #                 if 1 in det[0]['label_preds']:
-                    #                     print(det)
-                    #                 else:
-                    #                     print('#', end='')
-                    #                 net.train()
                     torchplus.train.save_models(model_dir, [net, amp_optimizer],
                                                 net.get_global_step())
-                    if debug:
-                        index = torch.randint(0, len(eval_dataset),(1,))[0]
-                        # det_boxes, labels and score here
-                        example = eval_dataset.dataset.get_sensor_data(index)
-                        points = example['lidar']['points']
-                        p = points[points[:,-1] < 0.01
-
-
-
+                    model_logging.log_text(f"Model saved: {model_dir}, {net.get_global_step()}", global_step)
                     net.eval()
-                    # result_path_step = result_path / f"step_{net.get_global_step()}"
-                    # result_path_step.mkdir(parents=True, exist_ok=True)
-                    # model_logging.log_text("########################", global_step)
-                    # model_logging.log_text(" EVALUATE",global_step)
-                    # model_logging.log_text("########################", global_step)
-                    # model_logging.log_text("Generating output labels...", global_step)
-                    # t = time.time()
-                    # detections = []
-                    # prog_bar = ProgressBar()
-                    # net.clear_timer()
-                    # prog_bar.start((len(eval_dataset) + eval_input_cfg.batch_size - 1) // eval_input_cfg.batch_size)
-                    # for example in iter(eval_dataloader):
-                    #     example = example_convert_to_torch(example, float_dtype)
-                    #     det = net(example)
-                    #     if len(det['label_preds']) > 0:
-                    #         print(det)
-                    #     detections += det
-                    #     prog_bar.print_bar()
-                    #
-                    # sec_per_ex = len(eval_dataset) / (time.time() - t)
-                    # model_logging.log_text(
-                    #     f'generate label finished({sec_per_ex:.2f}/s). start eval:',
-                    #     global_step)
-                    # result_dict = eval_dataset.dataset.evaluation(
-                    #     detections, str(result_path_step)
-                    # )
-                    # for k, v in result_dict['results'].items():
-                    #     model_logging.log_text(f"Evaluation {k}", global_step)
-                    #     model_logging.log_text(v, global_step)
-                    # model_logging.log_metrics(result_dict['detail'], global_step)
-                    # with open(result_path_step / "result.pkl", 'wb') as f:
-                    #     pickle.dump(detections, f)
-                    # net.train()
+                    result_path_step = result_path / f"step_{net.get_global_step()}"
+                    result_path_step.mkdir(parents=True, exist_ok=True)
+                    model_logging.log_text("########################", global_step)
+                    model_logging.log_text(" EVALUATE", global_step)
+                    model_logging.log_text("########################", global_step)
+                    model_logging.log_text("Generating eval images...", global_step)
+                    t = time.time()
+                    detections = []
+                    prog_bar = ProgressBar()
+                    net.clear_timer()
+                    cnt = 0
+                    for example in tqdm_notebook(iter(eval_dataloader)):
+                        example = example_convert_to_torch(example, float_dtype)
+                        detections += net(example)
+                    sec_per_ex = len(eval_dataset) / (time.time() - t)
+                    model_logging.log_text(
+                        f'generate eval predictions finished({sec_per_ex:.2f}/s). Start eval:',
+                        global_step)
+                    result_dict = eval_dataset.dataset.evaluation(
+                        detections, str(result_path_step)
+                    )
+                    for k, v in result_dict['results'].items():
+                        model_logging.log_text(f"Evaluation {k}", global_step)
+                        model_logging.log_text(v, global_step)
+                    model_logging.log_metrics(result_dict["detail"], global_step)
+                    with open(result_path_step / "result.pkl", "wb") as f:
+                        pickle.dump(detections, f)
+                    net.train()
+
                 step += 1
                 if step >= total_step:
                     break
@@ -344,10 +336,24 @@ def run_train(config_path,
         raise e
     finally:
         model_logging.close()
-    torchplus.train.save_models(model_dir, [net, amp_optimizer], net.get_global_step())
+    torchplus.train.save_models(model_dir, [net, amp_optimizer], step)
 
     ########### to be continued
 
+def buildBBox(points,color = [1,0,0]):
+    #print("Let's draw a cubic using o3d.geometry.LineSet")
+    # points = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0], [0, 0, 1], [1, 0, 1],
+    #           [0, 1, 1], [1, 1, 1]] x0y0z0, x0y0z1, x0y1z0, x0y1z1, x1y0z0, x1y0z1, x1y1z0, x1y1z1
+
+    points = points[[0,4,3,7,1,5,2,6],:]
+    lines = [[0, 1], [0, 2], [1, 3], [2, 3], [4, 5], [4, 6], [5, 7], [6, 7],
+             [0, 4], [1, 5], [2, 6], [3, 7]]
+    colors = [color for i in range(len(lines))]
+    line_set = o3d.geometry.LineSet()
+    line_set.points = o3d.utility.Vector3dVector(points)
+    line_set.lines = o3d.utility.Vector2iVector(lines)
+    line_set.colors = o3d.utility.Vector3dVector(colors)
+    return line_set
 
 def evaluate(config_path,
              model_dir=None,
