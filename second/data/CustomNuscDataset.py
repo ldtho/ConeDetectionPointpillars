@@ -16,7 +16,7 @@ from nuscenes.utils.geometry_utils import transform_matrix, view_points
 from second.core import box_np_ops
 from pathlib import Path
 import subprocess
-
+from nuscenes.nuscenes import NuScenesExplorer
 VERSION = 'trainval'
 TRAINVAL_SPLIT_PERCENTAGE = 0.99 if VERSION == 'trainval' else 0.8
 MIN_CONES_PER_SAMPLE = 8
@@ -38,6 +38,7 @@ NameMapping = {
     'movable_object.pushable_pullable': 'DontCare',
     'movable_object.debris': 'DontCare'
 }
+
 DefaultAttribute = {
     "car": "vehicle.parked",
     "pedestrian": "pedestrian.moving",
@@ -469,7 +470,7 @@ class CustomNuscEvalDataset(Dataset):
         for det in detections:
             annos = []
             boxes = _second_det_to_nusc_box(det)
-            boxes = self.transform_box_t(boxes, det["metadata"]["token"])
+            boxes = self.transform_box_back_to_global(boxes, det["metadata"]["token"])
 
             # boxes = self.move_boxes_to_car_space(boxes, ego_pose)
             for i, box in enumerate(boxes):
@@ -537,30 +538,8 @@ class CustomNuscEvalDataset(Dataset):
                 "nusc": detail
             }
         }
-    def _lidar_nusc_box_to_global(self, info, boxes, classes, eval_version="cvpr_2019"):
-        import pyquaternion
-        box_list = []
-        for box in boxes:
-            # Move box to ego vehicle coord system
-            box.rotate(pyquaternion.Quaternion(info['lidar2ego_rotation']))
-            box.translate(np.array(info['lidar2ego_translation']))
-            from nuscenes.eval.detection.data_classes import DetectionConfig
-            from nuscenes.eval.detection.config import config_factory
-            # filter det in ego.
-            cfg = config_factory(self.eval_version)
-            cls_range_map = cfg.class_range
-            # cls_range_map = eval_detection_configs[eval_version]["class_range"]
-            radius = np.linalg.norm(box.center[:2], 2)
-            det_range = cls_range_map[classes[box.label]]
-            if radius > det_range:
-                continue
-            # Move box to global coord system
-            box.rotate(pyquaternion.Quaternion(info['ego2global_rotation']))
-            box.translate(np.array(info['ego2global_translation']))
-            box_list.append(box)
-        return box_list
 
-    def transform_box_t(self, boxes, token):
+    def transform_box_back_to_global(self, boxes, token):
         sample = self.nusc.get('sample', token)
         sample_lidar_token = sample['data']['LIDAR_TOP']
         lidar_data = self.nusc.get('sample_data', sample_lidar_token)
