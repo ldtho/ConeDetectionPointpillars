@@ -149,10 +149,12 @@ class CustomNuscDataset(Dataset):
         except Exception as e:
             print(f"Failed to load Lidar Pointcloud for {sample}:{e}")
         points = lidar_pointcloud.points
+        print(points)
         points[3, :] /= 255
         points[3, :] -= 0.5
 
         points_cat = np.concatenate([points, times], axis=0).transpose()
+        print(points_cat)
         points_cat = points_cat[~np.isnan(points_cat).any(axis=1)]
 
         return points_cat
