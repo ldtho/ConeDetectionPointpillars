@@ -3,6 +3,8 @@ from tqdm import tqdm, tqdm_notebook
 import numpy as np
 import pandas as pandas
 import sys
+import open3d as o3d
+import pandas as pd
 
 sys.path.append('/kaggle/code/ConeDetectionPointpillars')
 import fire
@@ -16,7 +18,9 @@ from nuscenes.utils.geometry_utils import transform_matrix, view_points
 from second.core import box_np_ops
 from pathlib import Path
 import subprocess
+import re
 from nuscenes.nuscenes import NuScenesExplorer
+
 VERSION = 'trainval'
 TRAINVAL_SPLIT_PERCENTAGE = 0.99 if VERSION == 'trainval' else 0.8
 MIN_CONES_PER_SAMPLE = 8
@@ -194,6 +198,85 @@ class CustomNuscDataset(Dataset):
             box.translate(translation)
             box.rotate(rotation)
 
+
+@register_dataset
+class LidarSimDataset(Dataset):
+
+    def __init__(self, root_path="/media/starlet/LdTho/data/sets/lidarsim", info_path=None,
+                 class_names=["traffic_cone"], prep_func=None):
+        self.class_names = class_names
+        self._prep_func = prep_func
+        self.root_path = Path(root_path)
+        self.sample_list = [re.match(r"\d+", file) for file in os.listdir(root_path) if file.endswith(".pcd")]
+        self.sample_list = self.sample_list[:round(len(self.sample_list) * TRAINVAL_SPLIT_PERCENTAGE)]
+
+    def __len__(self):
+        return len(self.sample_list)
+
+    def __getitem__(self, index):
+        input_dict = self.get_sensor_data(index)
+        example = self._prep_func(input_dict=input_dict)
+        example["metadata"] = input_dict["metadata"]
+        if "anchors_mask" in example:
+            example["anchors_mask"] = example["anchors_mask"].astype(np.uint8)
+        return example
+
+    def get_sensor_data(self, query):
+        res = {
+            'lidar': {
+                'type': None,
+                'points': None
+            },
+            'metadata': {
+                'file_name': self.sample_list[query]
+            }
+        }
+        points = self.getPoints(query)
+        boxes_dict = self.getBoxes(query)
+
+        res['lidar']['points'] = points
+
+        gt_boxes = boxes_dict['boxes']
+        gt_names = boxes_dict['names']
+
+        gt_boxes = np.concatenate(gt_boxes).reshape(-1, 7)
+        gt_names = np.array(gt_names)
+        res['lidar']['annotations'] = {
+            'boxes': gt_boxes,
+            'names': gt_names,
+        }
+        return res
+
+        ####Continue####
+
+
+    def getPoints(self, query):
+        sample = self.sample_list[query]
+        lidar_path = self.root_path / f"{sample}.pcd"
+        lidar_pointcloud = o3d.io.read_point_cloud(str(lidar_path))
+        points = np.array(lidar_pointcloud.points)
+
+        ### Temporary, will need to adjust later ###
+        NumPointFeatures = points.shape[1]
+        if NumPointFeatures != 3:
+            points[:, 3] /= 255
+            points[:, 3] -= 0.5
+        points = points[~np.isnan(points).any(axis=1)]
+        return points
+
+
+    def getBoxes(self, query):
+        sample = self.sample_list[query]
+        box_path = self.root_path / f"{sample}.txt"
+        # box should look like this
+        # ([xyz[0], xyz[1], xyz[2], wlh[0], wlh[1], wlh[2], -theta - np.pi / 2])
+        box_list = {
+            'boxes': [],
+            'names': []
+        }
+        # boxes = pd.read_csv(str(box_path), delimiter=' ', header=None)
+        # box_list = [list(box) for _, box in boxes.iterrows()]
+        return box_list
 
 @register_dataset
 class CustomNuscTestDataset(Dataset):
@@ -429,7 +512,7 @@ class CustomNuscEvalDataset(Dataset):
         # print(boxes_dict)
         return boxes_dict
 
-    def move_boxes_to_car_space(self, boxes, ego_pose, eval = False):
+    def move_boxes_to_car_space(self, boxes, ego_pose, eval=False):
         """
         Move boxes from world space to car space.
         Note: mutates input boxes.
@@ -582,6 +665,7 @@ def _second_det_to_nusc_box(detection):
             velocity=velocity)
         box_list.append(box)
     return box_list
+
 
 if __name__ == '__main__':
     fire.Fire()
