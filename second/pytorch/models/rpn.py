@@ -529,16 +529,16 @@ class RPNNoHead(RPNNoHeadBase):
         return block, planes
 
 @register_rpn
-class RPNMMS(nn.Module):
+class RPNV2MMS(nn.Module):
     def __init__(self,
                  use_norm=True,
                  num_class=2,
-                 layer_nums=(3, 5, 5),
-                 layer_strides=(2, 2, 2),
-                 num_filters=(128, 128, 256),
-                 upsample_strides=(1, 2, 4),
-                 num_upsample_filters=(256, 256, 256),
-                 num_input_features=128,
+                 layer_nums=[3, 5, 5],
+                 layer_strides=[2, 2, 2],
+                 num_filters=[128, 128, 256],
+                 upsample_strides=[1, 2, 4],
+                 num_upsample_filters=[256, 256, 256],
+                 num_input_filters=128,
                  num_anchor_per_loc=2,
                  encode_background_as_zeros=True,
                  use_direction_classifier=True,
@@ -546,9 +546,9 @@ class RPNMMS(nn.Module):
                  num_groups=32,
                  box_code_size=7,
                  num_direction_bins=2,
-                 name='rpnmms'):
+                 name='rpnv2mms'):
 
-        super(RPNMMS, self).__init__()
+        super(RPNV2MMS, self).__init__()
         self._num_anchor_per_loc = num_anchor_per_loc
         self._use_direction_classifier = use_direction_classifier
         assert len(layer_nums) == 3
@@ -556,15 +556,10 @@ class RPNMMS(nn.Module):
         assert len(num_filters) == len(layer_nums)
         assert len(upsample_strides) == len(layer_nums)
         assert len(num_upsample_filters) == len(layer_nums)
-        upsample_strides = [
-            np.round(u).astype(np.int64) for u in upsample_strides
-        ]
         factors = []
         for i in range(len(layer_nums)):
-            assert int(np.prod(
-                layer_strides[:i + 1])) % upsample_strides[i] == 0
-            factors.append(
-                np.prod(layer_strides[:i + 1]) // upsample_strides[i])
+            assert int(np.prod(layer_strides[:i + 1])) % upsample_strides[i] == 0
+            factors.append(np.prod(layer_strides[:i + 1]) // upsample_strides[i])
         assert all([x == factors[0] for x in factors])
         if use_norm:
             if use_groupnorm:
@@ -588,7 +583,7 @@ class RPNMMS(nn.Module):
         self.block1 = Sequential(
             nn.ZeroPad2d(1),
             Conv2d(
-                num_input_features, num_filters[0], 3,
+                num_input_filters, num_filters[0], 3,
                 stride=layer_strides[0]),
             BatchNorm2d(num_filters[0]),
             nn.ReLU(),
@@ -598,6 +593,8 @@ class RPNMMS(nn.Module):
                 Conv2d(num_filters[0], num_filters[0], 3, padding=1))
             self.block1.add(BatchNorm2d(num_filters[0]))
             self.block1.add(nn.ReLU())
+        print("num_filters, num_upsample_filters, upsample_strides, upsample_strides", num_filters,
+              num_upsample_filters, upsample_strides, upsample_strides)
         self.deconv1 = Sequential(
             ConvTranspose2d(
                 num_filters[0],
@@ -655,6 +652,7 @@ class RPNMMS(nn.Module):
             num_cls = num_anchor_per_loc * num_class
         else:
             num_cls = num_anchor_per_loc * (num_class + 1)
+
         self.conv_cls = nn.Conv2d(sum(num_upsample_filters), num_cls, 1)
         self.conv_box = nn.Conv2d(
             sum(num_upsample_filters), num_anchor_per_loc * box_code_size, 1)
@@ -665,7 +663,6 @@ class RPNMMS(nn.Module):
     def forward(self, x):
         # t = time.time()
         # torch.cuda.synchronize()
-
         x = self.block1(x)
         up1 = self.deconv1(x)
         x = self.block2(x)
@@ -675,7 +672,6 @@ class RPNMMS(nn.Module):
         x = torch.cat([up1, up2, up3], dim=1)
         box_preds = self.conv_box(x)
         cls_preds = self.conv_cls(x)
-
         # [N, C, y(H), x(W)]
         box_preds = box_preds.permute(0, 2, 3, 1).contiguous()
         cls_preds = cls_preds.permute(0, 2, 3, 1).contiguous()
@@ -684,6 +680,8 @@ class RPNMMS(nn.Module):
         #     "cls_preds": cls_preds,
         #     "dir_cls_preds": dir_cls_preds
         # }
+
+
         ret_tuple = (box_preds, cls_preds)
         if self._use_direction_classifier:
             dir_cls_preds = self.conv_dir_cls(x)

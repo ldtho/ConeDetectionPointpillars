@@ -64,6 +64,50 @@ class PFNLayer(nn.Module):
             x_repeat = x_max.repeat(1, inputs.shape[1], 1)
             x_concatenated = torch.cat([x, x_repeat], dim=2)
             return x_concatenated
+class PFNLayerMMS(nn.Module):
+    def __init__(self,
+                 in_channels,
+                 out_channels,
+                 use_norm=True,
+                 last_layer=False):
+        """
+        Pillar Feature Net Layer.
+        The Pillar Feature Net could be composed of a series of these layers, but the PointPillars paper results only
+        used a single PFNLayer. This layer performs a similar role as second.pytorch.voxelnet.VFELayer.
+        :param in_channels: <int>. Number of input channels.
+        :param out_channels: <int>. Number of output channels.
+        :param use_norm: <bool>. Whether to include BatchNorm.
+        :param last_layer: <bool>. If last_layer, there is no concatenation of features.
+        """
+
+        super().__init__()
+        self.name = 'PFNLayerMMS'
+        self.last_vfe = last_layer
+        if not self.last_vfe:
+            out_channels = out_channels // 2
+        self.units = out_channels
+        self.in_channels = in_channels
+        # if use_norm:
+        #     BatchNorm1d = change_default_args(eps=1e-3, momentum=0.01)(nn.BatchNorm1d)
+        #     Linear = change_default_args(bias=False)(nn.Linear)
+        # else:
+        #     BatchNorm1d = Empty
+        #     Linear = change_default_args(bias=True)(nn.Linear)
+
+        self.linear= nn.Linear(self.in_channels, self.units, bias = False)
+        self.norm = nn.BatchNorm2d(self.units, eps=1e-3, momentum=0.01)
+
+        self.conv1 = nn.Conv2d(in_channels=self.in_channels, out_channels=self.units, kernel_size=1, stride=1)
+        self.conv2 = nn.Conv2d(in_channels=100, out_channels=1, kernel_size=1, stride=1)
+
+        self.t_conv = nn.ConvTranspose2d(100, 1, (1,8), stride=(1,7))
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=(1, 34), stride=(1, 1), dilation=(1,3))
+    def forward(self, inputs):
+        x = self.conv1(inputs)
+        x = self.norm(x)
+        x = F.relu(x)
+        x = self.conv3(x)
+        return x
 
 
 @register_vfe
@@ -374,9 +418,7 @@ class PillarFeatureNetMMS(nn.Module):
                 last_layer = False
             else:
                 last_layer = True
-            pfn_layers.append(
-                PFNLayer(
-                    in_filters, out_filters, use_norm, last_layer=last_layer))
+            pfn_layers.append(PFNLayerMMS(in_filters, out_filters, use_norm, last_layer=last_layer))
         self.pfn_layers = nn.ModuleList(pfn_layers)
 
         # Need pillar (voxel) size and x/y offset in order to calculate pillar offset
@@ -403,7 +445,6 @@ class PillarFeatureNetMMS(nn.Module):
 
         features = torch.cat(features_ls, dim=1)
         masked_features = features * mask
-
         pillar_feature = self.pfn_layers[0](masked_features)
         return pillar_feature
 
@@ -470,7 +511,7 @@ class PointPillarsScatterMMS(nn.Module):
     def __init__(self,
                  output_shape,
                  num_input_features=64,
-                 batch_size = 2):
+                 batch_size = 1):
         """
         Point Pillar's Scatter.
         Converts learned features from dense tensor to sparse pseudo image. This replaces SECOND's
@@ -489,6 +530,7 @@ class PointPillarsScatterMMS(nn.Module):
 
     def forward(self, voxel_features, coords):
         # batch_canvas will be the final output.
+        print("self.batch_size",self.batch_size)
         batch_canvas = []
         if self.batch_size == 1:
             canvas = torch.zeros(self.nchannels, self.nx * self.ny, dtype=voxel_features.dtype,
@@ -503,13 +545,11 @@ class PointPillarsScatterMMS(nn.Module):
             indices_num_channel = torch.mm(ones, indices_2d)
             indices_num_channel = indices_num_channel.type(torch.int64)
             scattered_canvas = canvas.scatter_(1, indices_num_channel, transposed_voxel_features)
-
             # Append to a list for later stacking.
             batch_canvas.append(scattered_canvas)
 
             # Stack to 3-dim tensor (batch-size, nchannels, nrows*ncols)
             batch_canvas = torch.stack(batch_canvas, 0)
-
             # Undo the column stacking to final 4-dim tensor
             batch_canvas = batch_canvas.view(1, self.nchannels, self.ny, self.nx)
             return batch_canvas
