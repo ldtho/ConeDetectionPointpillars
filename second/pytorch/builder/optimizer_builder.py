@@ -15,27 +15,10 @@
 """Functions to build DetectionModel training optimizers."""
 
 from torchplus.train import learning_schedules
-from torchplus.train import optim
 import torch
-from torch import nn
-from torchplus.train.fastai_optim import OptimWrapper, FastAIMixedOptim
-from functools import partial
-
-def children(m: nn.Module):
-    "Get children of `m`."
-    return list(m.children())
 
 
-def num_children(m: nn.Module) -> int:
-    "Get number of children modules in `m`."
-    return len(children(m))
-
-flatten_model = lambda m: sum(map(flatten_model,m.children()),[]) if num_children(m) else [m]
-
-get_layer_groups = lambda m: [nn.Sequential(*flatten_model(m))]
-
-
-def build(optimizer_config, net, name=None, mixed=False, loss_scale=512.0):
+def build(optimizer_config, params, name=None):
     """Create optimizer based on config.
 
   Args:
@@ -52,40 +35,29 @@ def build(optimizer_config, net, name=None, mixed=False, loss_scale=512.0):
 
     if optimizer_type == 'rms_prop_optimizer':
         config = optimizer_config.rms_prop_optimizer
-        optimizer_func = partial(
-            torch.optim.RMSprop,
+        optimizer = torch.optim.RMSprop(
+            params,
+            lr=_get_base_lr_by_lr_scheduler(config.learning_rate),
             alpha=config.decay,
             momentum=config.momentum_optimizer_value,
-            eps=config.epsilon)
+            eps=config.epsilon,
+            weight_decay=config.weight_decay)
 
     if optimizer_type == 'momentum_optimizer':
         config = optimizer_config.momentum_optimizer
-        optimizer_func = partial(
-            torch.optim.SGD,
+        optimizer = torch.optim.SGD(
+            params,
+            lr=_get_base_lr_by_lr_scheduler(config.learning_rate),
             momentum=config.momentum_optimizer_value,
-            eps=config.epsilon)
+            weight_decay=config.weight_decay)
 
     if optimizer_type == 'adam_optimizer':
         config = optimizer_config.adam_optimizer
-        if optimizer_config.fixed_weight_decay:
-            optimizer_func = partial(
-                torch.optim.Adam, betas=(0.9, 0.99), amsgrad=config.amsgrad)
-        else:
-            # regular adam
-            optimizer_func = partial(
-                torch.optim.Adam, amsgrad=config.amsgrad)
+        optimizer = torch.optim.Adam(
+            params,
+            lr=_get_base_lr_by_lr_scheduler(config.learning_rate),
+            weight_decay=config.weight_decay)
 
-
-
-    # optimizer = OptimWrapper(optimizer, true_wd=optimizer_config.fixed_weight_decay, wd=config.weight_decay)
-    optimizer = OptimWrapper.create(
-        optimizer_func,
-        3e-3,
-        get_layer_groups(net),
-        wd=config.weight_decay,
-        true_wd=optimizer_config.fixed_weight_decay,
-        bn_wd=True)
-    print(hasattr(optimizer, "_amp_stash"), '_amp_stash')
     if optimizer is None:
         raise ValueError('Optimizer %s not supported.' % optimizer_type)
 
@@ -97,3 +69,30 @@ def build(optimizer_config, net, name=None, mixed=False, loss_scale=512.0):
     else:
         optimizer.name = name
     return optimizer
+
+
+def _get_base_lr_by_lr_scheduler(learning_rate_config):
+    base_lr = None
+    learning_rate_type = learning_rate_config.WhichOneof('learning_rate')
+    if learning_rate_type == 'constant_learning_rate':
+        config = learning_rate_config.constant_learning_rate
+        base_lr = config.learning_rate
+
+    if learning_rate_type == 'exponential_decay_learning_rate':
+        config = learning_rate_config.exponential_decay_learning_rate
+        base_lr = config.initial_learning_rate
+
+    if learning_rate_type == 'manual_step_learning_rate':
+        config = learning_rate_config.manual_step_learning_rate
+        base_lr = config.initial_learning_rate
+        if not config.schedule:
+            raise ValueError('Empty learning rate schedule.')
+
+    if learning_rate_type == 'cosine_decay_learning_rate':
+        config = learning_rate_config.cosine_decay_learning_rate
+        base_lr = config.learning_rate_base
+    if base_lr is None:
+        raise ValueError(
+            'Learning_rate %s not supported.' % learning_rate_type)
+
+    return base_lr

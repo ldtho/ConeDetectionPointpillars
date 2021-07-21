@@ -1,11 +1,25 @@
 import math
 from pathlib import Path
+
+from second.utils.buildtools.pybind11_build import load_pb11
+from second.utils.find import find_cuda_device_arch
 import numba
 import numpy as np
-from spconv.utils import (
-    non_max_suppression_cpu, rotate_non_max_suppression_cpu)
+
+try:
+    from second.core.non_max_suppression.nms import (
+        non_max_suppression_cpu, rotate_non_max_suppression_cpu)
+except:
+    current_dir = Path(__file__).resolve().parents[0]
+    load_pb11(
+        ["../cc/nms/nms_kernel.cu.cc", "../cc/nms/nms.cc"],
+        current_dir / "nms.so",
+        current_dir,
+        cuda=True)
+    from second.core.non_max_suppression.nms import (
+        non_max_suppression_cpu, rotate_non_max_suppression_cpu)
+
 from second.core import box_np_ops
-# from second.core.non_max_suppression.nms_gpu import rotate_iou_gpu
 
 
 def nms_cc(dets, thresh):
@@ -15,6 +29,7 @@ def nms_cc(dets, thresh):
 
 
 def rotate_nms_cc(dets, thresh):
+
     scores = dets[:, 5]
     order = scores.argsort()[::-1].astype(np.int32)  # highest->lowest
     dets_corners = box_np_ops.center_to_corner_box2d(dets[:, :2], dets[:, 2:4],
@@ -26,6 +41,7 @@ def rotate_nms_cc(dets, thresh):
     # print(dets_corners.shape, order.shape, standup_iou.shape)
     return rotate_non_max_suppression_cpu(dets_corners, order, standup_iou,
                                           thresh)
+
 
 @numba.jit(nopython=True)
 def nms_jit(dets, thresh, eps=0.0):
@@ -151,4 +167,3 @@ def soft_nms_jit(boxes, sigma=0.5, Nt=0.3, threshold=0.001, method=0):
 
     keep = [i for i in range(N)]
     return keep
-

@@ -2,9 +2,8 @@ var KittiViewer = function (pointCloud, logger, imageCanvas) {
     this.rootPath = "/path/to/kitti";
     this.infoPath = "/path/to/infos.pkl";
     this.detPath = "/path/to/results.pkl";
-    this.backend = "http://127.0.0.1:16666";
+    this.backend = "http://127.0.0.1:7000";
     this.checkpointPath = "/path/to/tckpt";
-    this.datasetClassName = "KittiDataset"
     this.configPath = "/path/to/config";
     this.drawDet = false;
     this.imageIndexes = [];
@@ -14,7 +13,7 @@ var KittiViewer = function (pointCloud, logger, imageCanvas) {
     this.gtBboxes = [];
     this.dtBboxes = [];
     this.pointCloud = pointCloud;
-    this.maxPoints = 500000;
+    this.maxPoints = 150000;
     this.pointVertices = new Float32Array(this.maxPoints * 3);
     this.gtBoxColor = "#00ff00";
     this.dtBoxColor = "#ff0000";
@@ -23,16 +22,10 @@ var KittiViewer = function (pointCloud, logger, imageCanvas) {
     this.logger = logger;
     this.imageCanvas = imageCanvas;
     this.image = '';
-    this.enableInt16 = true;
-    this.int16Factor = 100;
-    this.removeOutside = false;
 };
 
 KittiViewer.prototype = {
     readCookies : function(){
-        if (CookiesKitti.get("kittiviewer_dataset_cname")){
-            this.datasetClassName = CookiesKitti.get("kittiviewer_dataset_cname");
-        }
         if (CookiesKitti.get("kittiviewer_backend")){
             this.backend = CookiesKitti.get("kittiviewer_backend");
         }
@@ -57,7 +50,6 @@ KittiViewer.prototype = {
         let data = {};
         data["root_path"] = this.rootPath;
         data["info_path"] = this.infoPath;
-        data["dataset_class_name"] = this.datasetClassName;
         return $.ajax({
             url: this.addhttp(this.backend) + '/api/readinfo',
             method: 'POST',
@@ -122,7 +114,7 @@ KittiViewer.prototype = {
     },
     inference: function( ){
         let self = this;
-        let data = {"image_idx": self.imageIndex, "remove_outside": self.removeOutside};
+        let data = {"image_idx": self.imageIndex};
         return $.ajax({
             url: this.addhttp(this.backend) + '/api/inference_by_idx',
             method: 'POST',
@@ -213,9 +205,6 @@ KittiViewer.prototype = {
             let data = {};
             data["image_idx"] = image_idx;
             data["with_det"] = this.drawDet;
-            data["enable_int16"] = this.enableInt16;
-            data["int16_factor"] = this.int16Factor;
-            data["remove_outside"] = this.removeOutside;
             let self = this;
             var ajax1 = $.ajax({
                 url: this.addhttp(this.backend) + '/api/get_pointcloud',
@@ -230,28 +219,19 @@ KittiViewer.prototype = {
                     self.clear();
                     response = response["results"][0];
                     var points_buf = str2buffer(atob(response["pointcloud"]));
-                    var points;
-                    if (self.enableInt16){
-                        var points = new Int16Array(points_buf);
-                    }
-                    else{
-                        var points = new Float32Array(points_buf);
-                    }
-                    var numFeatures = response["num_features"];
-                    if ("locs" in response){
-                        var locs = response["locs"];
-                        var dims = response["dims"];
-    
-                        var rots = response["rots"];
-                        var labels = response["labels"];
-                        self.gtBboxes = response["bbox"];
-                        self.gtBoxes = boxEdgeWithLabel(dims, locs, rots, 2,
-                            self.gtBoxColor, labels,
-                            self.gtLabelColor);
-                        // var boxes = boxEdge(dims, locs, rots, 2, "rgb(0, 255, 0)");
-                        for (var i = 0; i < self.gtBoxes.length; ++i) {
-                            scene.add(self.gtBoxes[i]);
-                        }
+                    var points = new Float32Array(points_buf);
+                    var locs = response["locs"];
+                    var dims = response["dims"];
+
+                    var rots = response["rots"];
+                    var labels = response["labels"];
+                    self.gtBboxes = response["bbox"];
+                    self.gtBoxes = boxEdgeWithLabel(dims, locs, rots, 2,
+                        self.gtBoxColor, labels,
+                        self.gtLabelColor);
+                    // var boxes = boxEdge(dims, locs, rots, 2, "rgb(0, 255, 0)");
+                    for (var i = 0; i < self.gtBoxes.length; ++i) {
+                        scene.add(self.gtBoxes[i]);
                     }
                     if (self.drawDet && response.hasOwnProperty("dt_dims")) {
 
@@ -260,7 +240,6 @@ KittiViewer.prototype = {
                         var rots = response["dt_rots"];
                         var scores = response["dt_scores"];
                         self.dtBboxes = response["dt_bbox"];
-                        console.log("draw det", dims.length);
                         let label_with_score = [];
                         for (var i = 0; i < locs.length; ++i) {
                             label_with_score.push("score=" + scores[i].toFixed(2).toString());
@@ -272,18 +251,17 @@ KittiViewer.prototype = {
                             scene.add(self.dtBoxes[i]);
                         }
                     }
-                    for (var i = 0; i < Math.min(points.length / numFeatures, self.maxPoints); i++) {
-                        for (var j = 0; j < numFeatures; ++j){
-                            self.pointCloud.geometry.attributes.position.array[i * 3 + j] = points[
-                                i * numFeatures + j];
-                        }
+                    for (var i = 0; i < Math.min(points.length / 4, self.maxPoints); i++) {
+                        self.pointCloud.geometry.attributes.position.array[i * 3] = points[
+                            i * 4];
+                        self.pointCloud.geometry.attributes.position.array[i * 3 + 1] =
+                            points[i * 4 +
+                                1];
+                        self.pointCloud.geometry.attributes.position.array[i * 3 + 2] =
+                            points[i * 4 +
+                                2];
                     }
-                    if (self.enableInt16){
-                        for (var i = 0; i < self.pointCloud.geometry.attributes.position.array.length; i++) {
-                            self.pointCloud.geometry.attributes.position.array[i] /=self.int16Factor;
-                        }    
-                    }
-                    self.pointCloud.geometry.setDrawRange(0, Math.min(points.length / numFeatures,
+                    self.pointCloud.geometry.setDrawRange(0, Math.min(points.length / 4,
                         self.maxPoints));
                     self.pointCloud.geometry.attributes.position.needsUpdate = true;
                     self.pointCloud.geometry.computeBoundingSphere();
@@ -316,7 +294,7 @@ KittiViewer.prototype = {
                 console.log("out of range!");
             }
         }
-    },    
+    },
     drawImage : function(){
         if (this.image === ''){
             console.log("??????");
@@ -335,7 +313,6 @@ KittiViewer.prototype = {
             console.log("draw image");
             ctx.drawImage(image, 0, 0, w, h);
             let x1, y1, x2, y2;
-            /*
             for (var i = 0; i < self.gtBboxes.length; ++i){
                 ctx.beginPath();
                 x1 = self.gtBboxes[i][0] * w;
@@ -358,34 +335,8 @@ KittiViewer.prototype = {
                 ctx.strokeStyle = "blue";
                 ctx.stroke();    
             }
-            */
         };
         image.src = this.image;
 
-    },
-    saveAsImage: function(renderer) {
-        var imgData, imgNode;
-        try {
-            var strMime = "image/jpeg";
-            var strDownloadMime = "image/octet-stream";
-            imgData = renderer.domElement.toDataURL(strMime);
-            this.saveFile(imgData.replace(strMime, strDownloadMime), `pc_${this.imageIndex}.jpg`);
-        } catch (e) {
-            console.log(e);
-            return;
-        }
-    },
-    saveFile : function (strData, filename) {
-        var link = document.createElement('a');
-        if (typeof link.download === 'string') {
-            document.body.appendChild(link); //Firefox requires the link to be in the body
-            link.download = filename;
-            link.href = strData;
-            link.click();
-            document.body.removeChild(link); //remove the link when done
-        } else {
-            location.replace(uri);
-        }
     }
-
 }

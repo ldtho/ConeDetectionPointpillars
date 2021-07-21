@@ -3,90 +3,31 @@ from functools import reduce
 
 import numpy as np
 import torch
+from torch import FloatTensor as FTensor
 from torch import stack as tstack
-# added
-from spconv.utils import rbbox_iou, rbbox_intersection
+
 import torchplus
 from torchplus.tools import torch_to_np_dtype
-# from second.core.non_max_suppression.nms_gpu import (nms_gpu_cc,
-#                                                      rotate_iou_gpu,
+from second.core.box_np_ops import iou_jit
+# from second.core.non_max_suppression.nms_gpu import (nms_gpu, rotate_iou_gpu,
 #                                                        rotate_nms_gpu)
 from second.core.non_max_suppression.nms_cpu import rotate_nms_cc, nms_cc
-import spconv
-def iou_jit(boxes, query_boxes, eps=1.0):
-    """calculate box iou. note that jit version runs 2x faster than cython in
-    my machine!
-    Parameters
-    ----------
-    boxes: (N, 4) ndarray of float
-    query_boxes: (K, 4) ndarray of float
-    Returns
-    -------
-    overlaps: (N, K) ndarray of overlap between boxes and query_boxes
-    """
-    N = boxes.shape[0]
-    K = query_boxes.shape[0]
-    overlaps = np.zeros((N, K), dtype=boxes.dtype)
-    for k in range(K):
-        box_area = ((query_boxes[k, 2] - query_boxes[k, 0] + eps) *
-                    (query_boxes[k, 3] - query_boxes[k, 1] + eps))
-        for n in range(N):
-            iw = (min(boxes[n, 2], query_boxes[k, 2]) - max(
-                boxes[n, 0], query_boxes[k, 0]) + eps)
-            if iw > 0:
-                ih = (min(boxes[n, 3], query_boxes[k, 3]) - max(
-                    boxes[n, 1], query_boxes[k, 1]) + eps)
-                if ih > 0:
-                    ua = (
-                        (boxes[n, 2] - boxes[n, 0] + eps) *
-                        (boxes[n, 3] - boxes[n, 1] + eps) + box_area - iw * ih)
-                    overlaps[n, k] = iw * ih / ua
-    return overlaps
-def riou_cc(rbboxes, qrbboxes, standup_thresh=0.0):
-    # less than 50ms when used in second one thread. 10x slower than gpu
-    boxes_corners = center_to_corner_box2d(rbboxes[:, :2], rbboxes[:, 2:4],
-                                           rbboxes[:, 4])
-    boxes_standup = corner_to_standup_nd(boxes_corners)
-    qboxes_corners = center_to_corner_box2d(qrbboxes[:, :2], qrbboxes[:, 2:4],
-                                            qrbboxes[:, 4])
-    qboxes_standup = corner_to_standup_nd(qboxes_corners)
-    # if standup box not overlapped, rbbox not overlapped too.
-    standup_iou = iou_jit(boxes_standup, qboxes_standup, eps=0.0)
-    return rbbox_iou(boxes_corners, qboxes_corners, standup_iou,
-                     standup_thresh)
 
-def rinter_cc(rbboxes, qrbboxes, standup_thresh=0.0):
-    # less than 50ms when used in second one thread. 10x slower than gpu
-    boxes_corners = center_to_corner_box2d(rbboxes[:, :2], rbboxes[:, 2:4],
-                                           rbboxes[:, 4])
-    boxes_standup = corner_to_standup_nd(boxes_corners)
-    qboxes_corners = center_to_corner_box2d(qrbboxes[:, :2], qrbboxes[:, 2:4],
-                                            qrbboxes[:, 4])
-    qboxes_standup = corner_to_standup_nd(qboxes_corners)
-    # if standup box not overlapped, rbbox not overlapped too.
-    standup_iou = iou_jit(boxes_standup, qboxes_standup, eps=0.0)
-    return rbbox_intersection(boxes_corners, qboxes_corners, standup_iou,
-                     standup_thresh)
+
 def second_box_encode(boxes, anchors, encode_angle_to_vector=False, smooth_dim=False):
     """box encode for VoxelNet
     Args:
         boxes ([N, 7] Tensor): normal boxes: x, y, z, l, w, h, r
         anchors ([N, 7] Tensor): anchors
     """
-    box_ndim = anchors.shape[-1]
-    cas, cgs = [], []
-    if box_ndim > 7:
-        xa, ya, za, wa, la, ha, ra, *cas = torch.split(anchors, 1, dim=-1)
-        xg, yg, zg, wg, lg, hg, rg, *cgs = torch.split(boxes, 1, dim=-1)
-    else:
-        xa, ya, za, wa, la, ha, ra = torch.split(anchors, 1, dim=-1)
-        xg, yg, zg, wg, lg, hg, rg = torch.split(boxes, 1, dim=-1)
-
+    xa, ya, za, wa, la, ha, ra = torch.split(anchors, 1, dim=-1)
+    xg, yg, zg, wg, lg, hg, rg = torch.split(boxes, 1, dim=-1)
+    za = za + ha / 2
+    zg = zg + hg / 2
     diagonal = torch.sqrt(la**2 + wa**2)
     xt = (xg - xa) / diagonal
     yt = (yg - ya) / diagonal
     zt = (zg - za) / ha
-    cts = [g - a for g, a in zip(cgs, cas)]
     if smooth_dim:
         lt = lg / la - 1
         wt = wg / wa - 1
@@ -102,10 +43,13 @@ def second_box_encode(boxes, anchors, encode_angle_to_vector=False, smooth_dim=F
         ray = torch.sin(ra)
         rtx = rgx - rax
         rty = rgy - ray
-        return torch.cat([xt, yt, zt, wt, lt, ht, rtx, rty, *cts], dim=-1)
+        return torch.cat([xt, yt, zt, wt, lt, ht, rtx, rty], dim=-1)
     else:
         rt = rg - ra
-        return torch.cat([xt, yt, zt, wt, lt, ht, rt, *cts], dim=-1)
+        return torch.cat([xt, yt, zt, wt, lt, ht, rt], dim=-1)
+
+    # rt = rg - ra
+    # return torch.cat([xt, yt, zt, wt, lt, ht, rt], dim=-1)
 
 
 def second_box_decode(box_encodings, anchors, encode_angle_to_vector=False, smooth_dim=False):
@@ -114,26 +58,50 @@ def second_box_decode(box_encodings, anchors, encode_angle_to_vector=False, smoo
         boxes ([N, 7] Tensor): normal boxes: x, y, z, w, l, h, r
         anchors ([N, 7] Tensor): anchors
     """
-    box_ndim = anchors.shape[-1]
-    cas, cts = [], []
-    if box_ndim > 7:
-        xa, ya, za, wa, la, ha, ra, *cas = torch.split(anchors, 1, dim=-1)
-        if encode_angle_to_vector:
-            xt, yt, zt, wt, lt, ht, rtx, rty, *cts = torch.split(
-                box_encodings, 1, dim=-1)
-        else:
-            xt, yt, zt, wt, lt, ht, rt, *cts = torch.split(box_encodings, 1, dim=-1)
-    else:
-        xa, ya, za, wa, la, ha, ra = torch.split(anchors, 1, dim=-1)
-        if encode_angle_to_vector:
-            xt, yt, zt, wt, lt, ht, rtx, rty = torch.split(
-                box_encodings, 1, dim=-1)
-        else:
-            xt, yt, zt, wt, lt, ht, rt = torch.split(box_encodings, 1, dim=-1)
+    # xa, ya, za, wa, la, ha, ra = torch.split(anchors, 1, dim=-1)
+    # use select instead of split for onnx conversion
+    batch_size = box_encodings.size()[0]
+    xa = anchors.select(2,0)
+    xa = xa.view(batch_size, -1, 1 )
+    ya = anchors.select(2,1)
+    ya = ya.view(batch_size, -1, 1 )
+    za = anchors.select(2,2)
+    za = za.view(batch_size, -1, 1 )
+    wa = anchors.select(2,3)
+    wa = wa.view(batch_size, -1, 1 )
+    la = anchors.select(2,4)
+    la = la.view(batch_size, -1, 1 )
+    ha = anchors.select(2,5)
+    ha = ha.view(batch_size, -1, 1 )
+    ra = anchors.select(2,6)
+    ra = ra.view(batch_size, -1, 1 )
 
-    # za = za + ha / 2
+    if encode_angle_to_vector:
+        xt, yt, zt, wt, lt, ht, rtx, rty = torch.split(
+            box_encodings, 1, dim=-1)
+        print("Split is not for onnx conversion. \
+        You have to replace 'split' with 'select' operation")
+    else:
+        xt, yt, zt, wt, lt, ht, rt = torch.split(box_encodings, 1, dim=-1)
+        # use select instead of split for onnx conversion
+        xt = box_encodings.select(2,0)
+        xt = xt.view(batch_size, -1, 1 )
+        yt = box_encodings.select(2,1)
+        yt = yt.view(batch_size, -1, 1 )
+        zt = box_encodings.select(2,2)
+        zt = zt.view(batch_size, -1, 1 )
+        wt = box_encodings.select(2,3)
+        wt = wt.view(batch_size, -1, 1 )
+        lt = box_encodings.select(2,4)
+        lt = lt.view(batch_size, -1, 1 )
+        ht = box_encodings.select(2,5)
+        ht = ht.view(batch_size, -1, 1 )
+        rt = box_encodings.select(2,6)
+        rt = rt.view(batch_size, -1, 1 )
     # xt, yt, zt, wt, lt, ht, rt = torch.split(box_encodings, 1, dim=-1)
+    za = za + ha / 2
     diagonal = torch.sqrt(la**2 + wa**2)
+    # print(xt.size(), diagonal.size(), xa.size())
     xg = xt * diagonal + xa
     yg = yt * diagonal + ya
     zg = zt * ha + za
@@ -142,6 +110,7 @@ def second_box_decode(box_encodings, anchors, encode_angle_to_vector=False, smoo
         wg = (wt + 1) * wa
         hg = (ht + 1) * ha
     else:
+
         lg = torch.exp(lt) * la
         wg = torch.exp(wt) * wa
         hg = torch.exp(ht) * ha
@@ -153,8 +122,8 @@ def second_box_decode(box_encodings, anchors, encode_angle_to_vector=False, smoo
         rg = torch.atan2(rgy, rgx)
     else:
         rg = rt + ra
-    cgs = [t + a for t, a in zip(cts, cas)]
-    return torch.cat([xg, yg, zg, wg, lg, hg, rg, *cgs], dim=-1)
+    zg = zg - hg / 2
+    return torch.cat([xg, yg, zg, wg, lg, hg, rg], dim=-1)
 
 def bev_box_encode(boxes, anchors, encode_angle_to_vector=False, smooth_dim=False):
     """box encode for VoxelNet
@@ -226,15 +195,15 @@ def bev_box_decode(box_encodings, anchors, encode_angle_to_vector=False, smooth_
 
 def corners_nd(dims, origin=0.5):
     """generate relative box corners based on length per dim and
-    origin point. 
-    
+    origin point.
+
     Args:
         dims (float array, shape=[N, ndim]): array of length per dim
         origin (list or array or float): origin point relate to smallest point.
-        dtype (output dtype, optional): Defaults to np.float32 
-    
+        dtype (output dtype, optional): Defaults to np.float32
+
     Returns:
-        float array, shape=[N, 2 ** ndim, ndim]: returned corners. 
+        float array, shape=[N, 2 ** ndim, ndim]: returned corners.
         point layout example: (2d) x0y0, x0y1, x1y0, x1y1;
             (3d) x0y0z0, x0y0z1, x0y1z0, x0y1z1, x1y0z0, x1y0z1, x1y1z0, x1y1z1
             where x0 < x1, y0 < y1, z0 < z1
@@ -264,14 +233,14 @@ def corners_nd(dims, origin=0.5):
 def corners_2d(dims, origin=0.5):
     """generate relative 2d box corners based on length per dim and
     origin point.
-    
+
     Args:
         dims (float array, shape=[N, 2]): array of length per dim
         origin (list or array or float): origin point relate to smallest point.
-        dtype (output dtype, optional): Defaults to np.float32 
-    
+        dtype (output dtype, optional): Defaults to np.float32
+
     Returns:
-        float array, shape=[N, 4, 2]: returned corners. 
+        float array, shape=[N, 4, 2]: returned corners.
         point layout: x0y0, x0y1, x1y1, x1y0
     """
     return corners_nd(dims, origin)
@@ -314,8 +283,8 @@ def rotation_3d_in_axis(points, angles, axis=0):
         ])
     else:
         raise ValueError("axis should in range")
-    # print(points.shape, rot_mat_T.shape)
-    return torch.einsum('aij,jka->aik', points, rot_mat_T)
+
+    return torch.einsum('aij,jka->aik', (points, rot_mat_T))
 
 
 def rotation_points_single_angle(points, angle, axis=0):
@@ -325,21 +294,21 @@ def rotation_points_single_angle(points, angle, axis=0):
     point_type = torchplus.get_tensor_class(points)
     if axis == 1:
         rot_mat_T = torch.stack([
-            point_type([rot_cos, 0, -rot_sin]),
-            point_type([0, 1, 0]),
-            point_type([rot_sin, 0, rot_cos])
+            torch.tensor([rot_cos, 0, -rot_sin], dtype=points.dtype, device=points.device),
+            torch.tensor([0, 1, 0], dtype=points.dtype, device=points.device),
+            torch.tensor([rot_sin, 0, rot_cos], dtype=points.dtype, device=points.device)
         ])
     elif axis == 2 or axis == -1:
         rot_mat_T = torch.stack([
-            point_type([rot_cos, -rot_sin, 0]),
-            point_type([rot_sin, rot_cos, 0]),
-            point_type([0, 0, 1])
+            torch.tensor([rot_cos, -rot_sin, 0], dtype=points.dtype, device=points.device),
+            torch.tensor([rot_sin, rot_cos, 0], dtype=points.dtype, device=points.device),
+            torch.tensor([0, 0, 1], dtype=points.dtype, device=points.device)
         ])
     elif axis == 0:
         rot_mat_T = torch.stack([
-            point_type([1, 0, 0]),
-            point_type([0, rot_cos, -rot_sin]),
-            point_type([0, rot_sin, rot_cos])
+            torch.tensor([1, 0, 0], dtype=points.dtype, device=points.device),
+            torch.tensor([0, rot_cos, -rot_sin], dtype=points.dtype, device=points.device),
+            torch.tensor([0, rot_sin, rot_cos], dtype=points.dtype, device=points.device)
         ])
     else:
         raise ValueError("axis should in range")
@@ -348,7 +317,7 @@ def rotation_points_single_angle(points, angle, axis=0):
 
 def rotation_2d(points, angles):
     """rotation 2d points based on origin point clockwise when angle positive.
-    
+
     Args:
         points (float array, shape=[N, point_size, 2]): points to be rotated.
         angles (float array, shape=[N]): rotation angle.
@@ -367,10 +336,10 @@ def rotation_2d(points, angles):
 def center_to_corner_box3d(centers,
                            dims,
                            angles,
-                           origin=(0.5, 0.5, 0.5),
+                           origin=[0.5, 1.0, 0.5],
                            axis=1):
     """convert kitti locations, dimensions and angles to corners
-    
+
     Args:
         centers (float array, shape=[N, 3]): locations in kitti label file.
         dims (float array, shape=[N, 3]): dimensions in kitti label file.
@@ -393,12 +362,12 @@ def center_to_corner_box3d(centers,
 
 def center_to_corner_box2d(centers, dims, angles=None, origin=0.5):
     """convert kitti locations, dimensions and angles to corners
-    
+
     Args:
         centers (float array, shape=[N, 2]): locations in kitti label file.
         dims (float array, shape=[N, 2]): dimensions in kitti label file.
         angles (float array, shape=[N]): rotation_y in kitti label file.
-    
+
     Returns:
         [type]: [description]
     """
@@ -412,6 +381,7 @@ def center_to_corner_box2d(centers, dims, angles=None, origin=0.5):
     corners += centers.view(-1, 1, 2)
     return corners
 
+
 def project_to_image(points_3d, proj_mat):
     points_num = list(points_3d.shape)[:-1]
     points_shape = np.concatenate([points_num, [1]], axis=0).tolist()
@@ -422,8 +392,6 @@ def project_to_image(points_3d, proj_mat):
     point_2d_res = point_2d[..., :2] / point_2d[..., 2:3]
     return point_2d_res
 
-def limit_period(val, offset=0.5, period=np.pi):
-    return val - torch.floor(val / period + offset) * period
 
 def camera_to_lidar(points, r_rect, velo2cam):
     num_points = points.shape[0]
@@ -495,7 +463,7 @@ def multiclass_nms(nms_func,
                 class_boxes = class_boxes[class_scores_keep]
             keep = nms_func(class_boxes, class_scores, pre_max_size,
                             post_max_size, iou_threshold)
-            if keep.shape[0] != 0:
+            if keep is not None:
                 if score_thresh > 0.0:
                     selected_per_class.append(class_scores_keep[keep])
                 else:
@@ -521,28 +489,15 @@ def nms(bboxes,
     if len(dets_np) == 0:
         keep = np.array([], dtype=np.int64)
     else:
-        # ret = np.array(nms_gpu_cc(dets_np, iou_threshold), dtype=np.int64)
         ret = np.array(nms_cc(dets_np, iou_threshold), dtype=np.int64)
         keep = ret[:post_max_size]
     if keep.shape[0] == 0:
-        return torch.zeros([0]).long().to(bboxes.device)
+        return None
     if pre_max_size is not None:
-        keep = torch.from_numpy(keep).long().to(bboxes.device)
+        keep = torch.from_numpy(keep).long().cuda()
         return indices[keep]
     else:
-        return torch.from_numpy(keep).long().to(bboxes.device)
-
-def nms_v2(bboxes,
-        scores,
-        pre_max_size=None,
-        post_max_size=None,
-        iou_threshold=0.5):
-    if pre_max_size is None:
-        pre_max_size = -1
-    if post_max_size is None:
-        post_max_size = -1
-    res = spconv.ops.nms(bboxes.cpu(), scores.cpu(), pre_max_size, post_max_size, iou_threshold, 1.0)
-    return res.to(bboxes.device)
+        return torch.from_numpy(keep).long().cuda()
 
 
 def rotate_nms(rbboxes,
@@ -563,9 +518,9 @@ def rotate_nms(rbboxes,
         ret = np.array(rotate_nms_cc(dets_np, iou_threshold), dtype=np.int64)
         keep = ret[:post_max_size]
     if keep.shape[0] == 0:
-        return torch.zeros([0]).long().to(rbboxes.device)
+        return None
     if pre_max_size is not None:
-        keep = torch.from_numpy(keep).long().to(rbboxes.device)
+        keep = torch.from_numpy(keep).long().cuda()
         return indices[keep]
     else:
-        return torch.from_numpy(keep).long().to(rbboxes.device)
+        return torch.from_numpy(keep).long().cuda()

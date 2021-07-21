@@ -1,4 +1,3 @@
-
 import concurrent.futures as futures
 import os
 import pathlib
@@ -122,35 +121,6 @@ def _extend_matrix(mat):
     return mat
 
 
-def _check_kitti_directory(root_path):
-    path = pathlib.Path(root_path)
-    results = []
-    results.append((path / 'training').exists())
-    results.append((path / 'testing').exists())
-    path_train_image_2 = path / 'training' / 'image_2'
-    results.append(path_train_image_2.exists())
-    results.append(len(path_train_image_2.glob('*.png')) == 7481)
-    path_train_label_2 = path / 'training' / 'label_2'
-    results.append(path_train_label_2.exists())
-    path_train_lidar = path / 'training' / 'velodyne'
-    results.append(path_train_lidar.exists())
-    path_train_calib = path / 'training' / 'calib'
-    results.append(path_train_calib.exists())
-    results.append(len(path_train_label_2.glob('*.txt')) == 7481)
-    results.append(len(path_train_lidar.glob('*.bin')) == 7481)
-    results.append(len(path_train_calib.glob('*.txt')) == 7481)
-    path_test_image_2 = path / 'testing' / 'image_2'
-    results.append(path_test_image_2.exists())
-    results.append(len(path_test_image_2.glob('*.png')) == 7518)
-    path_test_lidar = path / 'testing' / 'velodyne'
-    results.append(path_test_lidar.exists())
-    path_test_calib = path / 'testing' / 'calib'
-    results.append(path_test_calib.exists())
-    results.append(len(path_test_lidar.glob('*.bin')) == 7518)
-    results.append(len(path_test_calib.glob('*.txt')) == 7518)
-    return np.array(results, dtype=np.bool)
-
-
 def get_kitti_image_info(path,
                          training=True,
                          label_info=True,
@@ -162,63 +132,29 @@ def get_kitti_image_info(path,
                          relative_path=True,
                          with_imageshape=True):
     # image_infos = []
-    """ 
-    KITTI annotation format version 2:
-    {
-        [optional]points: [N, 3+] point cloud
-        [optional, for kitti]image: {
-            image_idx: ...
-            image_path: ...
-            image_shape: ...
-        }
-        point_cloud: {
-            num_features: 4
-            velodyne_path: ...
-        }
-        [optional, for kitti]calib: {
-            R0_rect: ...
-            Tr_velo_to_cam: ...
-            P2: ...
-        }
-        annos: {
-            location: [num_gt, 3] array
-            dimensions: [num_gt, 3] array
-            rotation_y: [num_gt] angle array
-            name: [num_gt] ground truth name array
-            [optional]difficulty: kitti difficulty
-            [optional]group_ids: used for multi-part object
-        }
-    }
-    """
     root_path = pathlib.Path(path)
     if not isinstance(image_ids, list):
         image_ids = list(range(image_ids))
 
     def map_func(idx):
-        info = {}
-        pc_info = {'num_features': 4}
-        calib_info = {}
-
-        image_info = {'image_idx': idx}
+        image_info = {'image_idx': idx, 'pointcloud_num_features': 4}
         annotations = None
         if velodyne:
-            pc_info['velodyne_path'] = get_velodyne_path(
+            image_info['velodyne_path'] = get_velodyne_path(
                 idx, path, training, relative_path)
-        image_info['image_path'] = get_image_path(idx, path, training,
+        image_info['img_path'] = get_image_path(idx, path, training,
                                                 relative_path)
         if with_imageshape:
-            img_path = image_info['image_path']
+            img_path = image_info['img_path']
             if relative_path:
                 img_path = str(root_path / img_path)
-            image_info['image_shape'] = np.array(
+            image_info['img_shape'] = np.array(
                 io.imread(img_path).shape[:2], dtype=np.int32)
         if label_info:
             label_path = get_label_path(idx, path, training, relative_path)
             if relative_path:
                 label_path = str(root_path / label_path)
             annotations = get_label_anno(label_path)
-        info["image"] = image_info
-        info["point_cloud"] = pc_info
         if calib:
             calib_path = get_calib_path(
                 idx, path, training, relative_path=False)
@@ -241,6 +177,10 @@ def get_kitti_image_info(path,
                 P1 = _extend_matrix(P1)
                 P2 = _extend_matrix(P2)
                 P3 = _extend_matrix(P3)
+            image_info['calib/P0'] = P0
+            image_info['calib/P1'] = P1
+            image_info['calib/P2'] = P2
+            image_info['calib/P3'] = P3
             R0_rect = np.array([
                 float(info) for info in lines[4].split(' ')[1:10]
             ]).reshape([3, 3])
@@ -250,7 +190,7 @@ def get_kitti_image_info(path,
                 rect_4x4[:3, :3] = R0_rect
             else:
                 rect_4x4 = R0_rect
-            
+            image_info['calib/R0_rect'] = rect_4x4
             Tr_velo_to_cam = np.array([
                 float(info) for info in lines[5].split(' ')[1:13]
             ]).reshape([3, 4])
@@ -260,19 +200,12 @@ def get_kitti_image_info(path,
             if extend_matrix:
                 Tr_velo_to_cam = _extend_matrix(Tr_velo_to_cam)
                 Tr_imu_to_velo = _extend_matrix(Tr_imu_to_velo)
-            calib_info['P0'] = P0
-            calib_info['P1'] = P1
-            calib_info['P2'] = P2
-            calib_info['P3'] = P3
-            calib_info['R0_rect'] = rect_4x4
-            calib_info['Tr_velo_to_cam'] = Tr_velo_to_cam
-            calib_info['Tr_imu_to_velo'] = Tr_imu_to_velo
-            info["calib"] = calib_info
-        
+            image_info['calib/Tr_velo_to_cam'] = Tr_velo_to_cam
+            image_info['calib/Tr_imu_to_velo'] = Tr_imu_to_velo
         if annotations is not None:
-            info['annos'] = annotations
-            add_difficulty_to_annos(info)
-        return info
+            image_info['annos'] = annotations
+            add_difficulty_to_annos(image_info)
+        return image_info
 
     with futures.ThreadPoolExecutor(num_worker) as executor:
         image_infos = executor.map(map_func, image_ids)

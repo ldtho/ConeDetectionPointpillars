@@ -8,21 +8,7 @@ import numpy as np
 from second.core import box_np_ops
 from second.core import preprocess as prep
 from second.data import kitti_common as kitti
-
-REGISTERED_DATASET_CLASSES = {}
-
-def register_dataset(cls, name=None):
-    global REGISTERED_DATASET_CLASSES
-    if name is None:
-        name = cls.__name__
-    assert name not in REGISTERED_DATASET_CLASSES, f"exist class: {REGISTERED_DATASET_CLASSES}"
-    REGISTERED_DATASET_CLASSES[name] = cls
-    return cls
-
-def get_dataset_class(name):
-    global REGISTERED_DATASET_CLASSES
-    assert name in REGISTERED_DATASET_CLASSES, f"available class: {REGISTERED_DATASET_CLASSES}"
-    return REGISTERED_DATASET_CLASSES[name]
+from second.data.preprocess import _read_and_prep_v9
 
 
 class Dataset(object):
@@ -31,82 +17,52 @@ class Dataset(object):
     ``__len__``, that provides the size of the dataset, and ``__getitem__``,
     supporting integer indexing in range from 0 to len(self) exclusive.
     """
-    NumPointFeatures = -1
+
     def __getitem__(self, index):
-        """This function is used for preprocess.
-        you need to create a input dict in this function for network inference.
-        format: {
-            anchors
-            voxels
-            num_points
-            coordinates
-            if training:
-                labels
-                reg_targets
-            [optional]anchors_mask, slow in SECOND v1.5, don't use this.
-            [optional]metadata, in kitti, image index is saved in metadata
-        }
-        """
         raise NotImplementedError
 
     def __len__(self):
         raise NotImplementedError
 
-    def get_sensor_data(self, query):
-        """Dataset must provide a unified function to get data.
-        Args:
-            query: int or dict. this param must support int for training.
-                if dict, should have this format (no example yet): 
-                {
-                    sensor_name: {
-                        sensor_meta
-                    }
-                }
-                if int, will return all sensor data. 
-                (TODO: how to deal with unsynchronized data?)
-        Returns:
-            sensor_data: dict. 
-            if query is int (return all), return a dict with all sensors: 
-            {
-                sensor_name: sensor_data
-                ...
-                metadata: ... (for kitti, contains image_idx)
-            }
-            
-            if sensor is lidar (all lidar point cloud must be concatenated to one array): 
-            e.g. If your dataset have two lidar sensor, you need to return a single dict:
-            {
-                "lidar": {
-                    "points": ...
-                    ...
-                }
-            }
-            sensor_data: {
-                points: [N, 3+]
-                [optional]annotations: {
-                    "boxes": [N, 7] locs, dims, yaw, in lidar coord system. must tested
-                        in provided visualization tools such as second.utils.simplevis
-                        or web tool.
-                    "names": array of string.
-                }
-            }
-            if sensor is camera (not used yet):
-            sensor_data: {
-                data: image string (array is too large)
-                [optional]annotations: {
-                    "boxes": [N, 4] 2d bbox
-                    "names": array of string.
-                }
-            }
-            metadata: {
-                # dataset-specific information.
-                # for kitti, must have image_idx for label file generation.
-                image_idx: ...
-            }
-            [optional]calib # only used for kitti
-        """
-        raise NotImplementedError
 
-    def evaluation(self, dt_annos, output_dir):
-        """Dataset must provide a evaluation function to evaluate model."""
-        raise NotImplementedError
+
+class KittiDataset(Dataset):
+    def __init__(self, info_path, root_path, num_point_features,
+                 target_assigner, feature_map_size, prep_func):
+        with open(info_path, 'rb') as f:
+            infos = pickle.load(f)
+        #self._kitti_infos = kitti.filter_infos_by_used_classes(infos, class_names)
+        self._root_path = root_path
+        self._kitti_infos = infos
+        self._num_point_features = num_point_features
+        print("remain number of infos:", len(self._kitti_infos))
+        # generate anchors cache
+        # [352, 400]
+        ret = target_assigner.generate_anchors(feature_map_size)
+        anchors = ret["anchors"]
+        anchors = anchors.reshape([-1, 7])
+        matched_thresholds = ret["matched_thresholds"]
+        unmatched_thresholds = ret["unmatched_thresholds"]
+        anchors_bv = box_np_ops.rbbox2d_to_near_bbox(
+            anchors[:, [0, 1, 3, 4, 6]])
+        anchor_cache = {
+            "anchors": anchors,
+            "anchors_bv": anchors_bv,
+            "matched_thresholds": matched_thresholds,
+            "unmatched_thresholds": unmatched_thresholds,
+        }
+        self._prep_func = partial(prep_func, anchor_cache=anchor_cache)
+
+    def __len__(self):
+        return len(self._kitti_infos)
+
+    @property
+    def kitti_infos(self):
+        return self._kitti_infos
+
+    def __getitem__(self, idx):
+        return _read_and_prep_v9(
+            info=self._kitti_infos[idx],
+            root_path=self._root_path,
+            num_point_features=self._num_point_features,
+            prep_func=self._prep_func)

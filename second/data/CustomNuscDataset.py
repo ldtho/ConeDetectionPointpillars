@@ -11,7 +11,7 @@ import fire
 import pickle
 import json
 from lyft_dataset_sdk.utils.geometry_utils import quaternion_yaw
-from second.data.dataset import Dataset, register_dataset, get_dataset_class
+from second.data.dataset import Dataset
 from nuscenes import NuScenes
 from nuscenes.utils.data_classes import LidarPointCloud, Box, Quaternion
 from nuscenes.utils.geometry_utils import transform_matrix, view_points
@@ -22,7 +22,7 @@ import re
 from nuscenes.nuscenes import NuScenesExplorer
 
 VERSION = 'mini'
-TRAINVAL_SPLIT_PERCENTAGE = 0.99 if VERSION == 'trainval' else 0.8
+TRAINVAL_SPLIT_PERCENTAGE = 0.99 if VERSION == 'mini' else 0.8
 MIN_CONES_PER_SAMPLE = 8
 NameMapping = {
     'movable_object.barrier': 'barrier',
@@ -55,16 +55,15 @@ DefaultAttribute = {
     "barrier": "",
     "traffic_cone": "",
 }
+pc_range = [-30, -20, -2.6, 30, 20, 2.2]
 
-
-@register_dataset
 class CustomNuscDataset(Dataset):
-    NumPointFeatures = 5
+    NumPointFeatures = 4
 
     def __init__(self, root_path=f'/media/starlet/LdTho/data/sets/nuscenes/v1.0-{VERSION}', info_path=None,
                  class_names=["traffic_cone"], prep_func=None,
                  num_point_features=None):
-        self.NumPointFeatures = 5
+        self.NumPointFeatures = 4
         self.class_names = class_names
         self.nusc = NuScenes(dataroot=root_path, version=f'v1.0-{VERSION}')
         self._prep_func = prep_func
@@ -72,14 +71,19 @@ class CustomNuscDataset(Dataset):
         for sample in self.nusc.sample:
             sample_token = sample['token']
             sample_lidar_token = sample['data']['LIDAR_TOP']
+            lidar_data = self.nusc.get('sample_data', sample_lidar_token)
+            ego_pose = self.nusc.get('ego_pose', lidar_data['ego_pose_token'])
             boxes = self.nusc.get_boxes(sample_lidar_token)
+            self.move_boxes_to_car_space(boxes,ego_pose)
             box_names = [NameMapping[b.name] for b in boxes if b.name in NameMapping.keys()]
             for box in boxes:
                 if box.name not in NameMapping.keys():
                     continue
                 # if NameMapping[box.name] in self.class_names:
                 if (NameMapping[box.name] in ["traffic_cone"]) & (
-                        box_names.count('traffic_cone') > MIN_CONES_PER_SAMPLE):
+                        box_names.count('traffic_cone') > MIN_CONES_PER_SAMPLE) \
+                        & (pc_range[0] < box.center[0] < pc_range[3])\
+                        & (pc_range[1] < box.center[1] < pc_range[4]):
                     self.filtered_sample_tokens.append(sample_token)
                     break
         self.filtered_sample_tokens = self.filtered_sample_tokens[
@@ -92,6 +96,7 @@ class CustomNuscDataset(Dataset):
 
     def __getitem__(self, index):
         input_dict = self.get_sensor_data(index)
+        # print(input_dict['lidar']['annotations']['gt_names'])
         example = self._prep_func(input_dict=input_dict)
         example["metadata"] = input_dict["metadata"]
         if "anchors_mask" in example:
@@ -126,9 +131,11 @@ class CustomNuscDataset(Dataset):
             gt_names.append(box.name)
         gt_boxes = np.concatenate(gt_boxes).reshape(-1, 7)
         gt_names = np.array(gt_names)
+        # print(gt_boxes)
+        # print(gt_names)
         res['lidar']['annotations'] = {
-            'boxes': gt_boxes,
-            'names': gt_names,
+            'gt_boxes': gt_boxes,
+            'gt_names': gt_names,
         }
         return res
 
@@ -153,12 +160,13 @@ class CustomNuscDataset(Dataset):
         except Exception as e:
             print(f"Failed to load Lidar Pointcloud for {sample}:{e}")
         points = lidar_pointcloud.points
-        print(points)
         points[3, :] /= 255
         points[3, :] -= 0.5
 
-        points_cat = np.concatenate([points, times], axis=0).transpose()
-        print(points_cat)
+        #Reflectivities to ones.
+        points[3, :] = 1
+        # points_cat = np.concatenate([points, times], axis=0).transpose()
+        points_cat = points.transpose()
         points_cat = points_cat[~np.isnan(points_cat).any(axis=1)]
 
         return points_cat
@@ -199,7 +207,6 @@ class CustomNuscDataset(Dataset):
             box.rotate(rotation)
 
 
-@register_dataset
 class LidarSimDataset(Dataset):
 
     def __init__(self, root_path="/media/starlet/LdTho/data/sets/lidarsim", info_path=None,
@@ -281,10 +288,9 @@ class LidarSimDataset(Dataset):
 
 
 # should shorten by inherit from parent class CustomNuscDataset
-EVAL_VERSION = 'mini'
+EVAL_VERSION = 'trainval'
 
 
-@register_dataset
 class CustomNuscEvalDataset(Dataset):
     NumPointFeatures = 5
 
@@ -569,7 +575,6 @@ def _second_det_to_nusc_box(detection):
         box_list.append(box)
     return box_list
 
-@register_dataset
 class CustomNuscDatasetMMS(Dataset):
     NumPointFeatures = 4
 

@@ -5,20 +5,21 @@ import numba
 import numpy as np
 from numba import cuda
 
-from spconv.utils import non_max_suppression_cpu
+from second.utils.buildtools.pybind11_build import load_pb11
 
-def nms_gpu_cc(dets, nms_overlap_thresh, device_id=0):
-    boxes_num = dets.shape[0]
-    keep = np.zeros(boxes_num, dtype=np.int32)
-    scores = dets[:, 4]
-    order = scores.argsort()[::-1].astype(np.int32)
-    sorted_dets = dets[order, :]
-    num_out = non_max_suppression_cpu(sorted_dets, keep, nms_overlap_thresh,
-                                  device_id)
-    keep = keep[:num_out]
-    return list(order[keep])
+try:
+    from second.core.non_max_suppression.nms import non_max_suppression
+except:
+    current_dir = Path(__file__).resolve().parents[0]
+    load_pb11(
+        ["../cc/nms/nms_kernel.cu.cc", "../cc/nms/nms.cc"],
+        current_dir / "nms.so",
+        current_dir,
+        cuda=True)
+    from second.core.non_max_suppression.nms import non_max_suppression
 
-@cuda.jit(device=True, inline=True)
+
+@cuda.jit('(float32[:], float32[:])', device=True, inline=True)
 def iou_device(a, b):
     left = max(a[0], b[0])
     right = min(a[2], b[2])
@@ -32,7 +33,7 @@ def iou_device(a, b):
     return interS / (Sa + Sb - interS)
 
 
-@cuda.jit()
+@cuda.jit('(int64, float32, float32[:, :], uint64[:])')
 def nms_kernel_v2(n_boxes, nms_overlap_thresh, dev_boxes, dev_mask):
     threadsPerBlock = 8 * 8
     row_start = cuda.blockIdx.y
@@ -67,7 +68,7 @@ def nms_kernel_v2(n_boxes, nms_overlap_thresh, dev_boxes, dev_mask):
         dev_mask[cur_box_idx * col_blocks + col_start] = t
 
 
-@cuda.jit()
+@cuda.jit('(int64, float32, float32[:], uint64[:])')
 def nms_kernel(n_boxes, nms_overlap_thresh, dev_boxes, dev_mask):
     threadsPerBlock = 8 * 8
     row_start = cuda.blockIdx.y
@@ -163,13 +164,25 @@ def nms_gpu(dets, nms_overlap_thresh, device_id=0):
     return list(order[keep])
 
 
-@cuda.jit(device=True, inline=True)
+def nms_gpu_cc(dets, nms_overlap_thresh, device_id=0):
+    boxes_num = dets.shape[0]
+    keep = np.zeros(boxes_num, dtype=np.int32)
+    scores = dets[:, 4]
+    order = scores.argsort()[::-1].astype(np.int32)
+    sorted_dets = dets[order, :]
+    num_out = non_max_suppression(sorted_dets, keep, nms_overlap_thresh,
+                                  device_id)
+    keep = keep[:num_out]
+    return list(order[keep])
+
+
+@cuda.jit('(float32[:], float32[:], float32[:])', device=True, inline=True)
 def trangle_area(a, b, c):
     return (
         (a[0] - c[0]) * (b[1] - c[1]) - (a[1] - c[1]) * (b[0] - c[0])) / 2.0
 
 
-@cuda.jit(device=True, inline=True)
+@cuda.jit('(float32[:], int32)', device=True, inline=True)
 def area(int_pts, num_of_inter):
     area_val = 0.0
     for i in range(num_of_inter - 2):
@@ -179,7 +192,7 @@ def area(int_pts, num_of_inter):
     return area_val
 
 
-@cuda.jit(device=True, inline=True)
+@cuda.jit('(float32[:], int32)', device=True, inline=True)
 def sort_vertex_in_convex_polygon(int_pts, num_of_inter):
     if num_of_inter > 0:
         center = cuda.local.array((2, ), dtype=numba.float32)
@@ -220,6 +233,7 @@ def sort_vertex_in_convex_polygon(int_pts, num_of_inter):
 
 
 @cuda.jit(
+    '(float32[:], float32[:], int32, int32, float32[:])',
     device=True,
     inline=True)
 def line_segment_intersection(pts1, pts2, i, j, temp_pts):
@@ -265,6 +279,7 @@ def line_segment_intersection(pts1, pts2, i, j, temp_pts):
 
 
 @cuda.jit(
+    '(float32[:], float32[:], int32, int32, float32[:])',
     device=True,
     inline=True)
 def line_segment_intersection_v1(pts1, pts2, i, j, temp_pts):
@@ -305,7 +320,7 @@ def line_segment_intersection_v1(pts1, pts2, i, j, temp_pts):
     return True
 
 
-@cuda.jit(device=True, inline=True)
+@cuda.jit('(float32, float32, float32[:])', device=True, inline=True)
 def point_in_quadrilateral(pt_x, pt_y, corners):
     ab0 = corners[2] - corners[0]
     ab1 = corners[3] - corners[1]
@@ -321,12 +336,10 @@ def point_in_quadrilateral(pt_x, pt_y, corners):
     adad = ad0 * ad0 + ad1 * ad1
     adap = ad0 * ap0 + ad1 * ap1
 
-    eps = -1e-6
-    return abab - abap >= eps and abap >= eps and adad - adap >= eps and adap >= eps
-    
+    return abab >= abap and abap >= 0 and adad >= adap and adap >= 0
 
 
-@cuda.jit(device=True, inline=True)
+@cuda.jit('(float32[:], float32[:], float32[:])', device=True, inline=True)
 def quadrilateral_intersection(pts1, pts2, int_pts):
     num_of_inter = 0
     for i in range(4):
@@ -350,7 +363,7 @@ def quadrilateral_intersection(pts1, pts2, int_pts):
     return num_of_inter
 
 
-@cuda.jit(device=True, inline=True)
+@cuda.jit('(float32[:], float32[:])', device=True, inline=True)
 def rbbox_to_corners(corners, rbbox):
     # generate clockwise corners and rotate it clockwise
     angle = rbbox[4]
@@ -376,7 +389,7 @@ def rbbox_to_corners(corners, rbbox):
                 1] = -a_sin * corners_x[i] + a_cos * corners_y[i] + center_y
 
 
-@cuda.jit(device=True, inline=True)
+@cuda.jit('(float32[:], float32[:])', device=True, inline=True)
 def inter(rbbox1, rbbox2):
     corners1 = cuda.local.array((8, ), dtype=numba.float32)
     corners2 = cuda.local.array((8, ), dtype=numba.float32)
@@ -393,7 +406,7 @@ def inter(rbbox1, rbbox2):
     return area(intersection_corners, num_intersection)
 
 
-@cuda.jit(device=True, inline=True)
+@cuda.jit('(float32[:], float32[:])', device=True, inline=True)
 def devRotateIoU(rbox1, rbox2):
     area1 = rbox1[2] * rbox1[3]
     area2 = rbox2[2] * rbox2[3]
@@ -401,7 +414,7 @@ def devRotateIoU(rbox1, rbox2):
     return area_inter / (area1 + area2 - area_inter)
 
 
-@cuda.jit()
+@cuda.jit('(int64, float32, float32[:], uint64[:])')
 def rotate_nms_kernel(n_boxes, nms_overlap_thresh, dev_boxes, dev_mask):
     threadsPerBlock = 8 * 8
     row_start = cuda.blockIdx.y
@@ -603,7 +616,7 @@ def rotate_iou_kernel_eval(N,
 
 
 def rotate_iou_gpu_eval(boxes, query_boxes, criterion=-1, device_id=0):
-    """rotated box iou running in gpu. 8x faster than cpu version
+    """rotated box iou running in gpu. 500x faster than cpu version
     (take 5ms in one example with numba.cuda code).
     convert from [this project](
         https://github.com/hongzhenwang/RRPN-revise/tree/master/lib/rotation).
